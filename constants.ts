@@ -1,3 +1,4 @@
+
 import { Webcam } from './types';
 
 export const SNAPSHOT_BASE_URL = 'https://app.projecte4estacions.com/snapshots/';

@@ -210,7 +210,11 @@ function App() {
           {regions.map(region => (
             <button
               key={region}
-              onClick={() => { setFilterRegion(region); setIsSidebarOpen(false); }}
+              onClick={() => { 
+                  setFilterRegion(region); 
+                  setSelectedWebcamId(null); // Tancar detall en canviar regió
+                  setIsSidebarOpen(false); 
+              }}
               className={`w-full text-left rounded-lg transition-all duration-200 flex items-center group relative px-3 py-2.5 justify-between
                 ${filterRegion === region 
                   ? (isDarkMode ? 'bg-white text-black shadow-lg' : 'bg-blue-600 text-white shadow-md') 
