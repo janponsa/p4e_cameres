@@ -25,6 +25,7 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
     const [currentIndex, setCurrentIndex] = useState(0);
     const [isPlaying, setIsPlaying] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
+    const [imageLoading, setImageLoading] = useState(false); // Per loading frame a frame
     const [error, setError] = useState<string | null>(null);
     const [playbackSpeed, setPlaybackSpeed] = useState(100); // ms per frame
 
@@ -32,9 +33,11 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
     const [showControls, setShowControls] = useState(true);
     // Video Generation State
     const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
+    const [generationProgress, setGenerationProgress] = useState(0);
 
     const timerRef = useRef<number | null>(null);
     const imageCacheRef = useRef<Map<number, HTMLImageElement>>(new Map());
+    const abortControllerRef = useRef<AbortController | null>(null);
 
     // 1. Fetch Available Dates
     useEffect(() => {
@@ -68,13 +71,20 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
         if (!selectedDate) return;
 
         const fetchImages = async () => {
+            // Cancel·lar fetchs anteriors si n'hi ha
+            if (abortControllerRef.current) abortControllerRef.current.abort();
+            abortControllerRef.current = new AbortController();
+
             setIsLoading(true);
             setIsPlaying(false);
             setRawImages([]);
             setFrames([]);
+            imageCacheRef.current.clear();
             
             try {
-                const response = await fetch(`${TIMELAPSE_API_BASE}${webcamId}/${selectedDate}/images`);
+                const response = await fetch(`${TIMELAPSE_API_BASE}${webcamId}/${selectedDate}/images`, {
+                    signal: abortControllerRef.current.signal
+                });
                 if (!response.ok) throw new Error('Error al carregar imatges');
                 const imageNames = await response.json();
 
@@ -83,9 +93,11 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
                 } else {
                     setError("No hi ha imatges per aquesta data");
                 }
-            } catch (err) {
-                console.error(err);
-                setError("Error carregant les imatges");
+            } catch (err: any) {
+                if (err.name !== 'AbortError') {
+                    console.error(err);
+                    setError("Error carregant les imatges");
+                }
             } finally {
                 setIsLoading(false);
             }
@@ -156,37 +168,45 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
     }, [rawImages, activePreset, webcamId, selectedDate]);
 
 
-    // 4. Preload logic (Smart Buffering)
+    // 4. Preload logic (Optimized for Memory)
     const preloadNextFrames = useCallback((startIndex: number, count: number) => {
         if (frames.length === 0) return;
         
+        // 1. Clean cache (remove images far from current index)
+        const cache = imageCacheRef.current;
+        if (cache.size > 50) { // Keep max 50 images in memory
+            for (const key of cache.keys()) {
+                // If key is far from startIndex (circular distance)
+                const dist = Math.abs(key - startIndex);
+                const circularDist = Math.min(dist, frames.length - dist);
+                if (circularDist > 30) {
+                    cache.delete(key);
+                }
+            }
+        }
+
+        // 2. Preload forward
         for (let i = 0; i < count; i++) {
             const idx = (startIndex + i) % frames.length;
-            if (!imageCacheRef.current.has(idx)) {
+            if (!cache.has(idx)) {
                 const img = new Image();
                 img.src = frames[idx].url;
-                imageCacheRef.current.set(idx, img);
-                
-                // Manage memory: delete old cache if too big
-                if (imageCacheRef.current.size > 80) {
-                    const firstKey = imageCacheRef.current.keys().next().value;
-                    if(firstKey !== undefined) imageCacheRef.current.delete(firstKey);
-                }
+                cache.set(idx, img);
             }
         }
     }, [frames]);
 
-    // 5. Playback Loop
+    // 5. Playback Loop (WITH LOOPING)
     useEffect(() => {
         if (isPlaying && frames.length > 0) {
             timerRef.current = window.setInterval(() => {
                 setCurrentIndex((prev) => {
                     const next = (prev + 1);
                     if (next >= frames.length) {
-                        setIsPlaying(false); // Stop at end
-                        return prev;
+                        return 0; // Loop back
                     }
-                    preloadNextFrames(next, 5);
+                    // Preload less aggressively to save bandwidth
+                    if (next % 5 === 0) preloadNextFrames(next, 10);
                     return next;
                 });
             }, playbackSpeed);
@@ -207,11 +227,12 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
         preloadNextFrames(val, 2);
     };
 
-    // 7. Generate Video
+    // 7. Generate Video (Non-blocking)
     const handleDownloadVideo = async () => {
         if (frames.length === 0 || isGeneratingVideo) return;
         setIsPlaying(false);
         setIsGeneratingVideo(true);
+        setGenerationProgress(0);
 
         try {
             // Get dimensions from first image
@@ -242,25 +263,38 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
                 a.click();
                 URL.revokeObjectURL(url);
                 setIsGeneratingVideo(false);
+                setGenerationProgress(0);
             };
 
             recorder.start();
 
-            // Draw frames one by one
+            // Draw frames one by one with delays to unblock UI
             for (let i = 0; i < frames.length; i++) {
+                // Allow UI updates every few frames
+                if (i % 10 === 0) {
+                    setGenerationProgress(Math.round((i / frames.length) * 100));
+                    await new Promise(resolve => setTimeout(resolve, 0)); 
+                }
+
                 const img = new Image();
                 img.crossOrigin = "anonymous";
                 img.src = frames[i].url;
-                await new Promise((resolve, reject) => {
+                await new Promise((resolve) => {
                     img.onload = () => {
                         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                        // Add watermark or timestamp
-                        ctx.font = "20px monospace";
+                        // Add watermark
+                        ctx.font = "bold 24px sans-serif";
                         ctx.fillStyle = "white";
-                        ctx.fillText(frames[i].time, 20, 40);
+                        ctx.shadowColor = "black";
+                        ctx.shadowBlur = 4;
+                        ctx.fillText(frames[i].time, 30, 50);
+                        ctx.shadowBlur = 0;
                         resolve(null);
                     };
-                    img.onerror = reject;
+                    img.onerror = () => {
+                        // Skip broken images
+                        resolve(null); 
+                    }
                 });
             }
 
@@ -298,11 +332,20 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
             className="relative w-full h-full bg-black group select-none overflow-hidden"
             onClick={() => setShowControls(!showControls)} // Toggle on mobile tap
         >
+            {/* Loading Indicator for current frame */}
+            {imageLoading && (
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+                     <i className="ph-bold ph-spinner animate-spin text-2xl text-white/50"></i>
+                </div>
+            )}
+
             {/* Main Image Display */}
             <img 
                 src={currentFrame?.url} 
                 alt={`Timelapse ${currentFrame?.time}`}
                 className="w-full h-full object-contain bg-black"
+                onLoad={() => setImageLoading(false)}
+                onLoadStart={() => setImageLoading(true)}
             />
             
             {/* Generating Video Overlay */}
@@ -310,17 +353,17 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
                 <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm">
                     <i className="ph-bold ph-film-strip animate-spin text-4xl text-blue-500 mb-2"></i>
                     <span className="text-white font-bold">Generant vídeo...</span>
-                    <span className="text-white/60 text-xs mt-1">Això pot trigar uns segons</span>
+                    <span className="text-blue-400 font-mono mt-2">{generationProgress}%</span>
+                    <span className="text-white/60 text-xs mt-1">Si us plau, espera</span>
                 </div>
             )}
 
             {/* Top Bar: Date & Presets */}
             <div className={`absolute top-0 inset-x-0 p-3 sm:p-4 bg-gradient-to-b from-black/80 to-transparent flex flex-wrap items-center justify-between gap-2 z-20 transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0'}`}>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                     <select 
                         value={selectedDate}
                         onChange={(e) => setSelectedDate(e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
                         className="bg-white/10 backdrop-blur-md text-white border border-white/20 rounded-lg px-2 py-1 text-[10px] sm:text-xs font-medium focus:outline-none hover:bg-white/20 transition-colors"
                     >
                         {dates.map(date => (

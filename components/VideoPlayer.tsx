@@ -21,8 +21,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
     const hlsRef = useRef<Hls | null>(null);
 
     // Determine logo based on time of day
-    // Night/Evening -> White Logo
-    // Day/Morning -> Blue Logo
     const isDarkTime = timeOfDay === 'night' || timeOfDay === 'evening';
     const logoUrl = isDarkTime 
         ? "https://app.projecte4estacions.com/images/logo_p4e_2023_h_blanc_200.png"
@@ -115,13 +113,28 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
     };
 
     const toggleFullscreen = () => {
-        if (!containerRef.current) return;
-        if (!document.fullscreenElement) {
-            containerRef.current.requestFullscreen();
-            setIsFullscreen(true);
-        } else {
-            document.exitFullscreen();
-            setIsFullscreen(false);
+        const video = videoRef.current;
+        const container = containerRef.current;
+
+        if (!video) return;
+
+        // iOS Support
+        if (video.webkitEnterFullscreen) {
+            video.webkitEnterFullscreen();
+            return;
+        }
+
+        // Standard Support
+        if (container) {
+            if (!document.fullscreenElement) {
+                container.requestFullscreen().catch(err => {
+                    console.error(`Error attempting to enable fullscreen: ${err.message}`);
+                });
+                setIsFullscreen(true);
+            } else {
+                document.exitFullscreen();
+                setIsFullscreen(false);
+            }
         }
     };
 
@@ -149,7 +162,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
     };
 
     return (
-        <div ref={containerRef} className="relative w-full h-full bg-black rounded-xl overflow-hidden shadow-2xl border border-white/10 group/video select-none aspect-video">
+        <div ref={containerRef} className="relative w-full h-full bg-black rounded-xl sm:rounded-2xl overflow-hidden shadow-2xl border border-white/10 group/video select-none aspect-video">
             {isLoading && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
                     <div className="flex flex-col items-center gap-2">
@@ -171,7 +184,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
             <img 
                 src={logoUrl} 
                 alt="P4E Logo" 
-                className="absolute top-4 left-4 z-30 w-20 sm:w-28 drop-shadow-lg opacity-80 pointer-events-none"
+                className="absolute top-4 left-4 z-30 w-16 sm:w-28 drop-shadow-lg opacity-80 pointer-events-none"
             />
 
             {/* LIVE Badge */}
@@ -184,7 +197,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
 
             <video 
                 ref={videoRef}
-                className={`w-full h-full bg-black ${error ? 'hidden' : 'block'} ${isVielha ? 'object-fill' : 'object-contain'}`}
+                /* CANVI CLAU: object-cover per defecte (immersiu), object-fill només per a Vielha */
+                className={`w-full h-full bg-black ${error ? 'hidden' : 'block'} ${isVielha ? 'object-fill' : 'object-cover'}`}
                 playsInline
                 muted={true}
                 autoPlay
@@ -218,5 +232,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
         </div>
     );
 };
+
+// Add webkitEnterFullscreen definition for TypeScript
+declare global {
+    interface HTMLVideoElement {
+      webkitEnterFullscreen?: () => void;
+    }
+}
 
 export default VideoPlayer;
