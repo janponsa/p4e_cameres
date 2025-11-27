@@ -12,6 +12,7 @@ interface VideoPlayerProps {
 const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay, webcamId }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
     
     // Estats del reproductor
     const [isLoading, setIsLoading] = useState(true);
@@ -20,13 +21,15 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
     const [error, setError] = useState<string | null>(null);
     const hlsRef = useRef<Hls | null>(null);
 
-    // Determine logo based on time of day
-    const isDarkTime = timeOfDay === 'night' || timeOfDay === 'evening';
-    const logoUrl = isDarkTime 
-        ? "https://app.projecte4estacions.com/images/logo_p4e_2023_h_blanc_200.png"
-        : "https://app.projecte4estacions.com/images/logo_p4e_2023_h_blau_200.png";
+    // Recording State
+    const [isRecording, setIsRecording] = useState(false);
+    const isRecordingRef = useRef(false); // Ref is critical for animation loop
+    const [recordingTime, setRecordingTime] = useState(0);
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    const recordedChunksRef = useRef<Blob[]>([]);
+    const recordingTimerRef = useRef<number | null>(null);
+    const animationFrameRef = useRef<number | null>(null);
 
-    // Check if camera is Vielha to force object-fill
     const isVielha = webcamId === 'vielha';
 
     useEffect(() => {
@@ -97,6 +100,10 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
             if (currentHls) {
                 currentHls.destroy();
             }
+            if (animationFrameRef.current) {
+                cancelAnimationFrame(animationFrameRef.current);
+            }
+            stopRecording(); // Ensure recording stops on unmount
         };
     }, [streamUrl]);
 
@@ -118,13 +125,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
 
         if (!video) return;
 
-        // iOS Support
         if (video.webkitEnterFullscreen) {
             video.webkitEnterFullscreen();
             return;
         }
 
-        // Standard Support
         if (container) {
             if (!document.fullscreenElement) {
                 container.requestFullscreen().catch(err => {
@@ -138,6 +143,36 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
         }
     };
 
+    // --- WATERMARK DRAWING FUNCTION (TEXT ONLY) ---
+    const drawWatermark = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+        const text = "© Projecte 4 Estacions";
+        // Responsive font size: 1.5% of width or min 10px (Reduced size)
+        const fontSize = Math.max(10, width * 0.015);
+        const padding = 15;
+
+        ctx.font = `500 ${fontSize}px "Inter", sans-serif`;
+        ctx.textBaseline = 'bottom';
+        ctx.textAlign = 'left';
+
+        const x = padding;
+        const y = height - padding;
+
+        // Shadow for legibility against any background
+        ctx.shadowColor = "rgba(0,0,0,0.8)";
+        ctx.shadowBlur = 3;
+        ctx.shadowOffsetX = 1;
+        ctx.shadowOffsetY = 1;
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+        ctx.fillText(text, x, y);
+
+        // Reset shadow
+        ctx.shadowColor = "transparent";
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+    };
+
     const takeSnapshot = () => {
         if (!videoRef.current) return;
         try {
@@ -146,19 +181,140 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             const ctx = canvas.getContext('2d');
+            
             if (ctx) {
+                // Draw Video
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                const dataUrl = canvas.toDataURL('image/jpeg');
-                const link = document.createElement('a');
-                link.href = dataUrl;
-                link.download = `p4e-snapshot-${Date.now()}.jpg`;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
+                
+                // Draw Watermark
+                drawWatermark(ctx, canvas.width, canvas.height);
+                
+                // Download
+                triggerDownload(canvas.toDataURL('image/jpeg', 0.9), `p4e-snapshot-${Date.now()}.jpg`);
             }
         } catch (e) {
+            console.error(e);
             alert("No s'ha pogut capturar la imatge.");
         }
+    };
+
+    const triggerDownload = (url: string, filename: string) => {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
+    // RECORDING LOGIC
+    const toggleRecording = () => {
+        if (isRecording) {
+            stopRecording();
+        } else {
+            startRecording();
+        }
+    };
+
+    const startRecording = () => {
+        if (!videoRef.current) return;
+        
+        try {
+            const video = videoRef.current;
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            
+            if (!ctx) throw new Error("Canvas context failed");
+            canvasRef.current = canvas;
+
+            // Set Refs for loop
+            setIsRecording(true);
+            isRecordingRef.current = true;
+
+            // Start Drawing Loop
+            const drawFrame = () => {
+                if (!canvasRef.current) return; // Stop if canvas is gone
+                
+                if (ctx && video && !video.paused && !video.ended) {
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    // Draw Watermark on every frame
+                    drawWatermark(ctx, canvas.width, canvas.height);
+                }
+                
+                // Use Ref to check status, avoiding stale closure
+                if (isRecordingRef.current) {
+                    animationFrameRef.current = requestAnimationFrame(drawFrame);
+                }
+            };
+            
+            // Start Loop
+            animationFrameRef.current = requestAnimationFrame(drawFrame);
+
+            // Determine MIME type (Prioritize MP4)
+            let mimeType = 'video/webm';
+            if (MediaRecorder.isTypeSupported('video/mp4')) {
+                mimeType = 'video/mp4';
+            } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+                mimeType = 'video/webm;codecs=vp9';
+            }
+
+            const stream = canvas.captureStream(30);
+            const mediaRecorder = new MediaRecorder(stream, { 
+                mimeType,
+                videoBitsPerSecond: 2500000 // 2.5 Mbps for decent quality
+            });
+            
+            mediaRecorderRef.current = mediaRecorder;
+            recordedChunksRef.current = [];
+
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    recordedChunksRef.current.push(event.data);
+                }
+            };
+
+            mediaRecorder.onstop = () => {
+                const blob = new Blob(recordedChunksRef.current, { type: mimeType });
+                const url = URL.createObjectURL(blob);
+                const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+                triggerDownload(url, `p4e-recording-${Date.now()}.${ext}`);
+                URL.revokeObjectURL(url);
+                
+                if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+                animationFrameRef.current = null;
+                canvasRef.current = null;
+            };
+
+            mediaRecorder.start();
+            setRecordingTime(0);
+            
+            recordingTimerRef.current = window.setInterval(() => {
+                setRecordingTime(prev => prev + 1);
+            }, 1000);
+
+        } catch (e) {
+            console.error("Recording error:", e);
+            alert("El navegador no permet gravar aquest stream.");
+            setIsRecording(false);
+            isRecordingRef.current = false;
+        }
+    };
+
+    const stopRecording = () => {
+        if (mediaRecorderRef.current && isRecordingRef.current) {
+            setIsRecording(false);
+            isRecordingRef.current = false; // Immediately stop draw loop
+            mediaRecorderRef.current.stop();
+            if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+        }
+    };
+
+    const formatTime = (seconds: number) => {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
 
     return (
@@ -180,24 +336,24 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
                 </div>
             )}
 
-            {/* Logo - Always visible overlay */}
-            <img 
-                src={logoUrl} 
-                alt="P4E Logo" 
-                className="absolute top-4 left-4 z-30 w-16 sm:w-28 drop-shadow-lg opacity-80 pointer-events-none"
-            />
-
-            {/* LIVE Badge */}
-            {!error && !isLoading && (
-                <div className="absolute top-4 right-4 z-30 bg-red-600/90 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white flex items-center gap-1.5 shadow-lg">
-                    <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div>
-                    DIRECTE
-                </div>
-            )}
+            <div className="absolute top-4 right-4 z-30 flex flex-col items-end gap-2">
+                {!error && !isLoading && !isRecording && (
+                    <div className="bg-red-600/90 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white flex items-center gap-1.5 shadow-lg">
+                        <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div>
+                        DIRECTE
+                    </div>
+                )}
+                
+                {isRecording && (
+                    <div className="bg-white/90 text-red-600 px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1.5 shadow-lg animate-pulse border border-red-500">
+                        <div className="w-2 h-2 bg-red-600 rounded-full"></div>
+                        REC {formatTime(recordingTime)}
+                    </div>
+                )}
+            </div>
 
             <video 
                 ref={videoRef}
-                /* CANVI CLAU: object-cover per defecte (immersiu), object-fill només per a Vielha */
                 className={`w-full h-full bg-black ${error ? 'hidden' : 'block'} ${isVielha ? 'object-fill' : 'object-cover'}`}
                 playsInline
                 muted={true}
@@ -207,25 +363,42 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
                 onClick={togglePlay}
             />
 
-            {/* Custom Control Bar (Visible on Hover) */}
+            {/* Bottom Controls */}
             <div className="absolute inset-x-0 bottom-0 p-4 bg-gradient-to-t from-black/90 via-black/50 to-transparent opacity-0 group-hover/video:opacity-100 transition-opacity duration-300 flex items-center justify-between z-30">
                 <div className="flex items-center gap-4">
                     <button onClick={togglePlay} className="text-white hover:text-blue-400 transition-colors">
-                        <i className={`ph-fill text-2xl ${isPlaying ? 'ph-pause' : 'ph-play'}`}></i>
+                        <i className={`ph-fill text-3xl ${isPlaying ? 'ph-pause' : 'ph-play'}`}></i>
                     </button>
                 </div>
 
                 <div className="flex items-center gap-3">
-                    <button 
-                        onClick={takeSnapshot} 
-                        className="flex items-center gap-2 bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-full text-xs font-medium text-white transition-colors backdrop-blur-md border border-white/10"
-                    >
-                        <i className="ph-bold ph-camera text-lg"></i>
-                        <span className="hidden sm:inline">Capturar</span>
-                    </button>
+                    {/* Buttons Grouped: Snapshot + Rec */}
+                    <div className="flex items-center bg-white/10 backdrop-blur-md rounded-full p-1 border border-white/10">
+                        <button 
+                            onClick={takeSnapshot} 
+                            className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-white/20 text-white transition-colors"
+                            title="Capturar Foto"
+                        >
+                            <i className="ph-bold ph-camera text-xl"></i>
+                        </button>
+
+                        <div className="w-px h-4 bg-white/20 mx-1"></div>
+
+                        <button 
+                            onClick={toggleRecording} 
+                            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all ${isRecording ? 'bg-white text-red-600' : 'hover:bg-white/20 text-white'}`}
+                            title={isRecording ? "Aturar Gravació" : "Gravar Clip"}
+                        >
+                            {isRecording ? (
+                                <div className="w-3 h-3 bg-red-600 rounded-sm"></div>
+                            ) : (
+                                <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+                            )}
+                        </button>
+                    </div>
                     
                     <button onClick={toggleFullscreen} className="text-white hover:text-blue-400 transition-colors ml-2">
-                        <i className={`ph-bold text-xl ${isFullscreen ? 'ph-corners-in' : 'ph-corners-out'}`}></i>
+                        <i className={`ph-bold text-2xl ${isFullscreen ? 'ph-corners-in' : 'ph-corners-out'}`}></i>
                     </button>
                 </div>
             </div>
@@ -233,7 +406,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
     );
 };
 
-// Add webkitEnterFullscreen definition for TypeScript
 declare global {
     interface HTMLVideoElement {
       webkitEnterFullscreen?: () => void;

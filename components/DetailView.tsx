@@ -125,9 +125,9 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
     const labelClass = isDarkMode ? 'text-white/50' : 'text-gray-500';
 
     return (
-        <div className="animate-fade-in w-full h-full flex flex-col">
+        <div className="animate-fade-in w-full flex flex-col items-start pb-10">
             {/* Header / Nav */}
-            <div className="flex flex-col gap-4 mb-6 shrink-0">
+            <div className="w-full flex flex-col gap-4 mb-6">
                 {/* Row 1: Back, Share & Controls */}
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -182,14 +182,10 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
             </div>
 
             {/* Layout Fluid */}
-            <div className="flex flex-col lg:flex-row gap-6 w-full flex-1 min-h-0 overflow-y-auto lg:overflow-visible">
+            <div className="flex flex-col lg:flex-row gap-6 w-full items-start">
                 
-                {/* Main Media Area */}
-                <div className="flex-1 min-w-0 flex flex-col shrink-0">
-                    {/* 
-                        Use aspect-video to maintain 16:9 ratio.
-                        Remove fixed height or max-height constraints to allow proportional growth.
-                    */}
+                {/* Main Media Area - NO h-full to allow aspect ratio to dictate height */}
+                <div className="flex-1 w-full min-w-0">
                      <div className="w-full aspect-video rounded-xl sm:rounded-2xl overflow-hidden shadow-2xl relative group bg-black ring-1 ring-white/10">
                         {activeTab === 'live' ? (
                             <VideoPlayer 
@@ -205,7 +201,7 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                 </div>
 
                 {/* Sidebar Info Panel */}
-                <div className="w-full lg:w-80 flex flex-col gap-4 shrink-0 pb-8 lg:pb-0">
+                <div className="w-full lg:w-80 flex flex-col gap-4 shrink-0">
                     
                     {/* WEATHER GRID WIDGET */}
                     <div className={`p-5 rounded-2xl ${panelClass}`}>
