@@ -100,11 +100,40 @@ function App() {
     if (saved) setFavorites(JSON.parse(saved));
   }, []);
 
-  // 4. Set Random Background Image
+  // 4. Filtering Logic (Calculated before Background Effect)
+  const activeWebcams = useMemo(() => {
+    if (!isDataLoaded) return [];
+    const available = ALL_WEBCAMS.filter(cam => {
+        const isActive = sessionData.hasOwnProperty(cam.id);
+        const isAlwaysShown = ALWAYS_SHOW_IDS.includes(cam.id);
+        return isActive || isAlwaysShown;
+    });
+    return available.map(cam => ({
+        ...cam,
+        clients: sessionData[cam.id]?.clients || 0
+    }));
+  }, [isDataLoaded, sessionData]);
+
+  // 5. Background Image Logic (Static per session)
   useEffect(() => {
-      const randomCam = ALL_WEBCAMS[Math.floor(Math.random() * ALL_WEBCAMS.length)];
-      setBgImage(`${SNAPSHOT_BASE_URL}${randomCam.id}.jpg`);
-  }, []);
+      // Only run if in image mode and we have active cameras
+      if (themeMode !== 'image' || activeWebcams.length === 0) return;
+
+      // Ensure we only set the background once per session (or refresh)
+      // We check if it's already set to prevent updates when activeWebcams refreshes data
+      setBgImage(current => {
+          if (current) return current;
+
+          const randomCam = activeWebcams[Math.floor(Math.random() * activeWebcams.length)];
+          if (randomCam) {
+              // Add timestamp to force refresh and show current lighting conditions (avoid cache)
+              return `${SNAPSHOT_BASE_URL}${randomCam.id}.jpg?t=${Date.now()}`;
+          }
+          return '';
+      });
+      
+      // Removed setInterval to keep image static as requested
+  }, [themeMode, activeWebcams]);
 
   const saveFavorites = (newFavs: string[]) => {
     setFavorites(newFavs);
@@ -119,20 +148,6 @@ function App() {
       saveFavorites([...favorites, id]);
     }
   };
-
-  // 5. Filtering Logic
-  const activeWebcams = useMemo(() => {
-    if (!isDataLoaded) return [];
-    const available = ALL_WEBCAMS.filter(cam => {
-        const isActive = sessionData.hasOwnProperty(cam.id);
-        const isAlwaysShown = ALWAYS_SHOW_IDS.includes(cam.id);
-        return isActive || isAlwaysShown;
-    });
-    return available.map(cam => ({
-        ...cam,
-        clients: sessionData[cam.id]?.clients || 0
-    }));
-  }, [isDataLoaded, sessionData]);
 
   const regions = useMemo(() => {
     const r = new Set(activeWebcams.map(w => w.region));
