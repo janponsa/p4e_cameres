@@ -13,6 +13,7 @@ const ALWAYS_SHOW_IDS = ['comadevaca'];
 
 type TimeOfDay = 'morning' | 'day' | 'evening' | 'night';
 type ThemeMode = 'light' | 'dark' | 'image';
+type MobileViewMode = 'list' | 'grid';
 
 function App() {
   const [selectedWebcamId, setSelectedWebcamId] = useState<string | null>(null);
@@ -25,6 +26,9 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false); 
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false); 
   
+  // Mobile View State
+  const [mobileViewMode, setMobileViewMode] = useState<MobileViewMode>('list');
+
   // Data States
   const [sessionData, setSessionData] = useState<Record<string, { clients: number }>>({});
   const [isDataLoaded, setIsDataLoaded] = useState(false);
@@ -33,13 +37,11 @@ function App() {
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>('day');
 
   // --- THEME LOGIC START ---
-  // Helper to determine automatic theme based on hour (Day=Light, Night=Dark)
   const getAutomaticTheme = (): ThemeMode => {
       const hour = new Date().getHours();
       return (hour >= 7 && hour < 19) ? 'light' : 'dark';
   };
 
-  // Initialize theme: Check localStorage first, otherwise use automatic time-based theme
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
       const savedTheme = localStorage.getItem('p4e_nexus_theme');
       if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'image') {
@@ -50,17 +52,15 @@ function App() {
 
   const [bgImage, setBgImage] = useState<string>('');
 
-  // Function to manually change theme and save to localStorage
   const handleThemeChange = (mode: ThemeMode) => {
       setThemeMode(mode);
       localStorage.setItem('p4e_nexus_theme', mode);
   };
   // --- THEME LOGIC END ---
   
-  // Derived boolean for text contrast logic
   const isDarkMode = themeMode === 'dark' || themeMode === 'image';
   
-  // 1. Calculate Time of Day (Only for Logo)
+  // 1. Calculate Time of Day
   useEffect(() => {
       const updateTime = () => {
         const hour = new Date().getHours();
@@ -100,7 +100,7 @@ function App() {
     if (saved) setFavorites(JSON.parse(saved));
   }, []);
 
-  // 4. Filtering Logic (Calculated before Background Effect)
+  // 4. Filtering Logic
   const activeWebcams = useMemo(() => {
     if (!isDataLoaded) return [];
     const available = ALL_WEBCAMS.filter(cam => {
@@ -114,25 +114,18 @@ function App() {
     }));
   }, [isDataLoaded, sessionData]);
 
-  // 5. Background Image Logic (Static per session)
+  // 5. Background Image Logic
   useEffect(() => {
-      // Only run if in image mode and we have active cameras
       if (themeMode !== 'image' || activeWebcams.length === 0) return;
 
-      // Ensure we only set the background once per session (or refresh)
-      // We check if it's already set to prevent updates when activeWebcams refreshes data
       setBgImage(current => {
           if (current) return current;
-
           const randomCam = activeWebcams[Math.floor(Math.random() * activeWebcams.length)];
           if (randomCam) {
-              // Add timestamp to force refresh and show current lighting conditions (avoid cache)
               return `${SNAPSHOT_BASE_URL}${randomCam.id}.jpg?t=${Date.now()}`;
           }
           return '';
       });
-      
-      // Removed setInterval to keep image static as requested
   }, [themeMode, activeWebcams]);
 
   const saveFavorites = (newFavs: string[]) => {
@@ -178,9 +171,9 @@ function App() {
 
   const selectedWebcam = useMemo(() => activeWebcams.find(w => w.id === selectedWebcamId), [selectedWebcamId, activeWebcams]);
 
-  // Common styles based on theme
+  // Common styles
   const textPrimary = isDarkMode ? 'text-white' : 'text-gray-900';
-  const textSecondary = isDarkMode ? 'text-white/60' : 'text-gray-700'; // Darkened for better readability
+  const textSecondary = isDarkMode ? 'text-white/60' : 'text-gray-700'; 
   const bgPanel = isDarkMode ? 'bg-black/40 border-white/10' : 'bg-white/60 border-white/40 shadow-xl';
   const hoverBg = isDarkMode ? 'hover:bg-white/10' : 'hover:bg-black/5';
   const sidebarBg = isDarkMode ? 'bg-black/60 border-r border-white/10' : 'bg-white/70 border-r border-gray-200';
@@ -200,12 +193,9 @@ function App() {
                     alt="Background" 
                     className="w-full h-full object-cover scale-105 blur-md opacity-100 transition-opacity duration-1000"
                 />
-                {/* Overlay per millorar lectura en mode imatge */}
                 <div className="absolute inset-0 bg-gray-900/60 transition-colors duration-500"></div>
              </>
           )}
-          
-          {/* Noise texture */}
           <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 mix-blend-overlay"></div>
       </div>
 
@@ -227,7 +217,7 @@ function App() {
               key={region}
               onClick={() => { 
                   setFilterRegion(region); 
-                  setSelectedWebcamId(null); // Tancar detall en canviar regió
+                  setSelectedWebcamId(null); 
                   setIsSidebarOpen(false); 
               }}
               className={`w-full text-left rounded-lg transition-all duration-200 flex items-center group relative px-3 py-2.5 justify-between
@@ -248,29 +238,9 @@ function App() {
         <div className={`p-4 border-t ${isDarkMode ? 'border-white/10' : 'border-gray-200'}`}>
            <p className={`text-xs font-bold uppercase tracking-wider mb-3 px-1 ${textSecondary}`}>Aparença</p>
            <div className={`grid grid-cols-3 gap-1 p-1 rounded-xl ${isDarkMode ? 'bg-white/10' : 'bg-gray-200/50'}`}>
-               <button 
-                  onClick={() => handleThemeChange('light')}
-                  className={`flex flex-col items-center justify-center py-2 rounded-lg transition-all ${themeMode === 'light' ? 'bg-white shadow-sm text-black scale-100' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white scale-95'}`}
-               >
-                  <i className="ph-fill ph-sun text-lg mb-0.5"></i>
-                  <span className="text-[9px] font-bold">Blanc</span>
-               </button>
-               
-               <button 
-                  onClick={() => handleThemeChange('dark')}
-                  className={`flex flex-col items-center justify-center py-2 rounded-lg transition-all ${themeMode === 'dark' ? 'bg-gray-800 shadow-sm text-white scale-100' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white scale-95'}`}
-               >
-                  <i className="ph-fill ph-moon text-lg mb-0.5"></i>
-                  <span className="text-[9px] font-bold">Negre</span>
-               </button>
-
-               <button 
-                  onClick={() => handleThemeChange('image')}
-                  className={`flex flex-col items-center justify-center py-2 rounded-lg transition-all ${themeMode === 'image' ? 'bg-blue-600 shadow-sm text-white scale-100' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white scale-95'}`}
-               >
-                  <i className="ph-fill ph-image text-lg mb-0.5"></i>
-                  <span className="text-[9px] font-bold">Imatge</span>
-               </button>
+               <button onClick={() => handleThemeChange('light')} className={`flex flex-col items-center justify-center py-2 rounded-lg transition-all ${themeMode === 'light' ? 'bg-white shadow-sm text-black scale-100' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white scale-95'}`}><i className="ph-fill ph-sun text-lg mb-0.5"></i><span className="text-[9px] font-bold">Blanc</span></button>
+               <button onClick={() => handleThemeChange('dark')} className={`flex flex-col items-center justify-center py-2 rounded-lg transition-all ${themeMode === 'dark' ? 'bg-gray-800 shadow-sm text-white scale-100' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white scale-95'}`}><i className="ph-fill ph-moon text-lg mb-0.5"></i><span className="text-[9px] font-bold">Negre</span></button>
+               <button onClick={() => handleThemeChange('image')} className={`flex flex-col items-center justify-center py-2 rounded-lg transition-all ${themeMode === 'image' ? 'bg-blue-600 shadow-sm text-white scale-100' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white scale-95'}`}><i className="ph-fill ph-image text-lg mb-0.5"></i><span className="text-[9px] font-bold">Imatge</span></button>
            </div>
         </div>
       </aside>
@@ -295,27 +265,39 @@ function App() {
                     <i className="ph-bold ph-list text-xl"></i>
                 </button>
 
-                {/* LOGO P4E */}
                 <img 
                     src={themeMode === 'light' ? "https://app.projecte4estacions.com/images/logo_p4e_2023_h_blau_200.png" : "https://www.projecte4estacions.com/uploads/1/1/9/0/119049478/published/logo-h-azul.png?1696675697"} 
                     alt="Logo" 
                     className={`h-5 sm:h-6 shrink-0 ${themeMode !== 'light' && 'brightness-0 invert'}`} 
                 />
 
-                {/* Search Bar */}
-                <div className="relative group w-full max-w-xs transition-all duration-300 ml-auto lg:ml-4">
-                    <i className={`ph-bold ph-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 transition-colors text-xs sm:text-sm ${textSecondary}`}></i>
-                    <input 
-                        type="text" 
-                        placeholder="Cercar..." 
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        className={`w-full border text-xs sm:text-sm rounded-full pl-8 sm:pl-9 pr-4 py-1.5 sm:py-2 focus:outline-none focus:ring-1 transition-all backdrop-blur-md shadow-sm
-                            ${isDarkMode 
-                                ? 'bg-white/10 border-white/10 text-white placeholder-white/40 focus:bg-black/40 focus:ring-white/30' 
-                                : 'bg-white/60 border-gray-200 text-gray-900 placeholder-gray-500 focus:bg-white focus:ring-blue-500/30'
-                            }`}
-                    />
+                {/* SEARCH & MOBILE VIEW TOGGLE */}
+                <div className="flex items-center gap-2 flex-1 max-w-xs ml-auto lg:ml-4">
+                    <div className="relative group w-full transition-all duration-300">
+                        <i className={`ph-bold ph-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 transition-colors text-xs sm:text-sm ${textSecondary}`}></i>
+                        <input 
+                            type="text" 
+                            placeholder="Cercar..." 
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className={`w-full border text-xs sm:text-sm rounded-full pl-8 sm:pl-9 pr-4 py-1.5 sm:py-2 focus:outline-none focus:ring-1 transition-all backdrop-blur-md shadow-sm
+                                ${isDarkMode 
+                                    ? 'bg-white/10 border-white/10 text-white placeholder-white/40 focus:bg-black/40 focus:ring-white/30' 
+                                    : 'bg-white/60 border-gray-200 text-gray-900 placeholder-gray-500 focus:bg-white focus:ring-blue-500/30'
+                                }`}
+                        />
+                    </div>
+                    
+                    {/* MOBILE VIEW TOGGLE BUTTON (Hidden on Desktop) */}
+                    {!selectedWebcamId && (
+                        <button 
+                            onClick={() => setMobileViewMode(prev => prev === 'list' ? 'grid' : 'list')}
+                            className={`lg:hidden p-2 rounded-full backdrop-blur-md border transition-all ${bgPanel} ${textPrimary} shadow-sm active:scale-95`}
+                            title={mobileViewMode === 'list' ? "Veure com a graella" : "Veure com a llista"}
+                        >
+                            <i className={`ph-bold text-lg ${mobileViewMode === 'list' ? 'ph-squares-four' : 'ph-list'}`}></i>
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -358,6 +340,7 @@ function App() {
                     </h1>
                  </div>
                  
+                 {/* Mobile Sort Selector */}
                  <div className="lg:hidden">
                     <select 
                       value={sortBy}
@@ -384,7 +367,13 @@ function App() {
                     <p className="text-lg font-medium">No s'han trobat resultats.</p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3 sm:gap-4 lg:gap-6">
+                <div className={`
+                    grid gap-3 sm:gap-4 lg:gap-6
+                    ${mobileViewMode === 'list' 
+                        ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5' 
+                        : 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-4' /* Mobile Grid Mode */
+                    }
+                `}>
                   {filteredWebcams.map((webcam) => (
                     <WebcamCard 
                       key={webcam.id} 
@@ -393,6 +382,7 @@ function App() {
                       onToggleFavorite={(e) => toggleFavorite(e, webcam.id)}
                       onClick={() => setSelectedWebcamId(webcam.id)}
                       isDarkMode={isDarkMode}
+                      mobileViewMode={mobileViewMode} // Pass view mode prop
                     />
                   ))}
                 </div>
