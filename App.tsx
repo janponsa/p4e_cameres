@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { ALL_WEBCAMS, SNAPSHOT_BASE_URL } from './constants';
 import WebcamCard from './components/WebcamCard';
@@ -28,17 +29,37 @@ function App() {
   const [sessionData, setSessionData] = useState<Record<string, { clients: number }>>({});
   const [isDataLoaded, setIsDataLoaded] = useState(false);
 
-  // Theme & Background States
-  // CANVI: Per defecte 'light' (fons blanc)
-  const [themeMode, setThemeMode] = useState<ThemeMode>('light'); 
+  // Time state only for Logo logic
+  const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>('day');
+
+  // --- THEME LOGIC START ---
+  // Helper to determine automatic theme based on hour (Day=Light, Night=Dark)
+  const getAutomaticTheme = (): ThemeMode => {
+      const hour = new Date().getHours();
+      return (hour >= 7 && hour < 19) ? 'light' : 'dark';
+  };
+
+  // Initialize theme: Check localStorage first, otherwise use automatic time-based theme
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+      const savedTheme = localStorage.getItem('p4e_nexus_theme');
+      if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'image') {
+          return savedTheme;
+      }
+      return getAutomaticTheme();
+  });
+
   const [bgImage, setBgImage] = useState<string>('');
+
+  // Function to manually change theme and save to localStorage
+  const handleThemeChange = (mode: ThemeMode) => {
+      setThemeMode(mode);
+      localStorage.setItem('p4e_nexus_theme', mode);
+  };
+  // --- THEME LOGIC END ---
   
   // Derived boolean for text contrast logic
   const isDarkMode = themeMode === 'dark' || themeMode === 'image';
   
-  // Time state only for Logo logic
-  const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>('day');
-
   // 1. Calculate Time of Day (Only for Logo)
   useEffect(() => {
       const updateTime = () => {
@@ -209,7 +230,7 @@ function App() {
            <p className={`text-xs font-bold uppercase tracking-wider mb-3 px-1 ${textSecondary}`}>Aparença</p>
            <div className={`grid grid-cols-3 gap-1 p-1 rounded-xl ${isDarkMode ? 'bg-white/10' : 'bg-gray-200/50'}`}>
                <button 
-                  onClick={() => setThemeMode('light')}
+                  onClick={() => handleThemeChange('light')}
                   className={`flex flex-col items-center justify-center py-2 rounded-lg transition-all ${themeMode === 'light' ? 'bg-white shadow-sm text-black scale-100' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white scale-95'}`}
                >
                   <i className="ph-fill ph-sun text-lg mb-0.5"></i>
@@ -217,7 +238,7 @@ function App() {
                </button>
                
                <button 
-                  onClick={() => setThemeMode('dark')}
+                  onClick={() => handleThemeChange('dark')}
                   className={`flex flex-col items-center justify-center py-2 rounded-lg transition-all ${themeMode === 'dark' ? 'bg-gray-800 shadow-sm text-white scale-100' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white scale-95'}`}
                >
                   <i className="ph-fill ph-moon text-lg mb-0.5"></i>
@@ -225,7 +246,7 @@ function App() {
                </button>
 
                <button 
-                  onClick={() => setThemeMode('image')}
+                  onClick={() => handleThemeChange('image')}
                   className={`flex flex-col items-center justify-center py-2 rounded-lg transition-all ${themeMode === 'image' ? 'bg-blue-600 shadow-sm text-white scale-100' : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white scale-95'}`}
                >
                   <i className="ph-fill ph-image text-lg mb-0.5"></i>
