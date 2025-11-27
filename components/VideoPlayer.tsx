@@ -19,11 +19,15 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
     const [isPlaying, setIsPlaying] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    
+    // Controls Visibility (Tap to Hide)
+    const [showControls, setShowControls] = useState(true);
+
     const hlsRef = useRef<Hls | null>(null);
 
     // Recording State
     const [isRecording, setIsRecording] = useState(false);
-    const isRecordingRef = useRef(false); // Ref is critical for animation loop
+    const isRecordingRef = useRef(false);
     const [recordingTime, setRecordingTime] = useState(0);
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const recordedChunksRef = useRef<Blob[]>([]);
@@ -103,12 +107,19 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
             if (animationFrameRef.current) {
                 cancelAnimationFrame(animationFrameRef.current);
             }
-            stopRecording(); // Ensure recording stops on unmount
+            stopRecording();
         };
     }, [streamUrl]);
 
+    // Handle Tap on Video Container
+    const handleContainerClick = (e: React.MouseEvent) => {
+        // Toggle controls visibility
+        setShowControls(prev => !prev);
+    };
+
     // Custom Controls Logic
-    const togglePlay = () => {
+    const togglePlay = (e: React.MouseEvent) => {
+        e.stopPropagation(); // Prevent toggling UI
         if (!videoRef.current) return;
         if (isPlaying) {
             videoRef.current.pause();
@@ -119,7 +130,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
         }
     };
 
-    const toggleFullscreen = () => {
+    const toggleFullscreen = (e: React.MouseEvent) => {
+        e.stopPropagation(); // Prevent toggling UI
         const video = videoRef.current;
         const container = containerRef.current;
 
@@ -146,7 +158,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
     // --- WATERMARK DRAWING FUNCTION (TEXT ONLY) ---
     const drawWatermark = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
         const text = "© Projecte 4 Estacions";
-        // Responsive font size: 1.5% of width or min 10px (Reduced size)
         const fontSize = Math.max(10, width * 0.015);
         const padding = 15;
 
@@ -157,7 +168,6 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
         const x = padding;
         const y = height - padding;
 
-        // Shadow for legibility against any background
         ctx.shadowColor = "rgba(0,0,0,0.8)";
         ctx.shadowBlur = 3;
         ctx.shadowOffsetX = 1;
@@ -166,14 +176,14 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
         ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
         ctx.fillText(text, x, y);
 
-        // Reset shadow
         ctx.shadowColor = "transparent";
         ctx.shadowBlur = 0;
         ctx.shadowOffsetX = 0;
         ctx.shadowOffsetY = 0;
     };
 
-    const takeSnapshot = () => {
+    const takeSnapshot = (e: React.MouseEvent) => {
+        e.stopPropagation();
         if (!videoRef.current) return;
         try {
             const video = videoRef.current;
@@ -183,13 +193,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
             const ctx = canvas.getContext('2d');
             
             if (ctx) {
-                // Draw Video
                 ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                
-                // Draw Watermark
                 drawWatermark(ctx, canvas.width, canvas.height);
-                
-                // Download
                 triggerDownload(canvas.toDataURL('image/jpeg', 0.9), `p4e-snapshot-${Date.now()}.jpg`);
             }
         } catch (e) {
@@ -208,7 +213,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
     };
 
     // RECORDING LOGIC
-    const toggleRecording = () => {
+    const toggleRecording = (e: React.MouseEvent) => {
+        e.stopPropagation();
         if (isRecording) {
             stopRecording();
         } else {
@@ -229,30 +235,24 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
             if (!ctx) throw new Error("Canvas context failed");
             canvasRef.current = canvas;
 
-            // Set Refs for loop
             setIsRecording(true);
             isRecordingRef.current = true;
 
-            // Start Drawing Loop
             const drawFrame = () => {
-                if (!canvasRef.current) return; // Stop if canvas is gone
+                if (!canvasRef.current) return;
                 
                 if (ctx && video && !video.paused && !video.ended) {
                     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    // Draw Watermark on every frame
                     drawWatermark(ctx, canvas.width, canvas.height);
                 }
                 
-                // Use Ref to check status, avoiding stale closure
                 if (isRecordingRef.current) {
                     animationFrameRef.current = requestAnimationFrame(drawFrame);
                 }
             };
             
-            // Start Loop
             animationFrameRef.current = requestAnimationFrame(drawFrame);
 
-            // Determine MIME type (Prioritize MP4)
             let mimeType = 'video/webm';
             if (MediaRecorder.isTypeSupported('video/mp4')) {
                 mimeType = 'video/mp4';
@@ -263,7 +263,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
             const stream = canvas.captureStream(30);
             const mediaRecorder = new MediaRecorder(stream, { 
                 mimeType,
-                videoBitsPerSecond: 2500000 // 2.5 Mbps for decent quality
+                videoBitsPerSecond: 2500000 
             });
             
             mediaRecorderRef.current = mediaRecorder;
@@ -305,7 +305,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
     const stopRecording = () => {
         if (mediaRecorderRef.current && isRecordingRef.current) {
             setIsRecording(false);
-            isRecordingRef.current = false; // Immediately stop draw loop
+            isRecordingRef.current = false;
             mediaRecorderRef.current.stop();
             if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
         }
@@ -318,9 +318,13 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
     };
 
     return (
-        <div ref={containerRef} className="relative w-full h-full bg-black rounded-xl sm:rounded-2xl overflow-hidden shadow-2xl border border-white/10 group/video select-none aspect-video">
+        <div 
+            ref={containerRef} 
+            className="relative w-full h-full bg-black rounded-xl sm:rounded-2xl overflow-hidden shadow-2xl border border-white/10 group/video select-none aspect-video cursor-pointer"
+            onClick={handleContainerClick}
+        >
             {isLoading && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
+                <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20 pointer-events-none">
                     <div className="flex flex-col items-center gap-2">
                          <i className="ph-bold ph-spinner animate-spin text-4xl text-blue-500"></i>
                          <span className="text-white/60 text-sm font-medium">Connectant...</span>
@@ -329,14 +333,15 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
             )}
             
             {error && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-20 p-4 text-center">
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-20 p-4 text-center pointer-events-none">
                     <i className="ph-bold ph-warning-circle text-4xl text-red-500 mb-2"></i>
                     <p className="text-gray-300 font-medium">{error}</p>
                     {poster && <p className="text-xs text-gray-500 mt-2">Mostrant última imatge estàtica</p>}
                 </div>
             )}
 
-            <div className="absolute top-4 right-4 z-30 flex flex-col items-end gap-2">
+            {/* LIVE/REC BADGE */}
+            <div className={`absolute top-4 right-4 z-30 flex flex-col items-end gap-2 transition-opacity duration-300 ${showControls || isRecording || isLoading || error ? 'opacity-100' : 'opacity-0'}`}>
                 {!error && !isLoading && !isRecording && (
                     <div className="bg-red-600/90 backdrop-blur px-2 py-0.5 rounded text-[10px] font-bold text-white flex items-center gap-1.5 shadow-lg">
                         <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div>
@@ -360,11 +365,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
                 autoPlay
                 poster={poster}
                 crossOrigin="anonymous"
-                onClick={togglePlay}
             />
 
             {/* Bottom Controls */}
-            <div className="absolute inset-x-0 bottom-0 p-4 bg-gradient-to-t from-black/90 via-black/50 to-transparent opacity-0 group-hover/video:opacity-100 transition-opacity duration-300 flex items-center justify-between z-30">
+            <div className={`absolute inset-x-0 bottom-0 p-4 bg-gradient-to-t from-black/90 via-black/50 to-transparent flex items-center justify-between z-30 transition-all duration-300 
+                ${showControls ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}
+            `}>
                 <div className="flex items-center gap-4">
                     <button onClick={togglePlay} className="text-white hover:text-blue-400 transition-colors">
                         <i className={`ph-fill text-3xl ${isPlaying ? 'ph-pause' : 'ph-play'}`}></i>

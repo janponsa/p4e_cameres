@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Webcam } from '../types';
 import { SNAPSHOT_BASE_URL } from '../constants';
@@ -8,6 +9,7 @@ interface WebcamCardProps {
     onToggleFavorite: (e: React.MouseEvent) => void;
     onClick: () => void;
     isDarkMode: boolean;
+    mobileViewMode: 'list' | 'grid';
 }
 
 // Helper per traduir codis WMO a icones i colors
@@ -59,7 +61,7 @@ const getWeatherIcon = (code: number, isDay: boolean) => {
     return { icon: 'ph-cloud', color: 'text-gray-400', label: 'Variable' };
 };
 
-const WebcamCard: React.FC<WebcamCardProps> = ({ webcam, isFavorite, onToggleFavorite, onClick, isDarkMode }) => {
+const WebcamCard: React.FC<WebcamCardProps> = ({ webcam, isFavorite, onToggleFavorite, onClick, isDarkMode, mobileViewMode }) => {
     // Cache buster per evitar imatges velles
     const snapshotUrl = `${SNAPSHOT_BASE_URL}${webcam.id}-mini.jpg?r=${Math.floor(Date.now() / 60000)}`; 
     
@@ -101,18 +103,30 @@ const WebcamCard: React.FC<WebcamCardProps> = ({ webcam, isFavorite, onToggleFav
         : "bg-white border-gray-200 shadow-sm hover:shadow-md";
 
     const titleColor = isDarkMode ? "text-gray-100" : "text-gray-900";
-    const subtitleColor = isDarkMode ? "text-gray-400" : "text-gray-600";
-    const infoColor = isDarkMode ? "text-gray-300" : "text-gray-700";
-    const badgeBg = isDarkMode ? "bg-white/10 border-white/5" : "bg-gray-100 border-gray-200";
+    const subtitleColor = isDarkMode ? "text-gray-400" : "text-gray-500";
+    const infoColor = isDarkMode ? "text-gray-300" : "text-gray-600";
     const mountainIconColor = isDarkMode ? "text-gray-500" : "text-gray-400";
+
+    // Layout Logic
+    const isMobileGrid = mobileViewMode === 'grid';
+    
+    // Classes for the main container layout
+    // CHANGE: Adjusted Grid aspect ratio to [4/3] (more horizontal/square)
+    // CHANGE: Adjusted List height to h-20 (more compact)
+    const layoutClasses = isMobileGrid 
+        ? "flex-col aspect-[4/3] sm:aspect-auto sm:h-56" // Mobile Grid (4:3 ratio)
+        : "flex-row h-20 sm:flex-col sm:h-56"; // Mobile List (Default, Compact 80px)
 
     return (
         <div 
             onClick={onClick}
-            className={`group relative ${containerStyle} backdrop-blur-md border rounded-xl sm:rounded-2xl overflow-hidden cursor-pointer transition-all duration-300 sm:hover:shadow-2xl sm:hover:-translate-y-1 flex flex-row sm:flex-col h-28 sm:h-56 w-full`}
+            className={`group relative ${containerStyle} backdrop-blur-md border rounded-xl sm:rounded-2xl overflow-hidden cursor-pointer transition-all duration-300 sm:hover:shadow-2xl sm:hover:-translate-y-1 flex w-full ${layoutClasses}`}
         >
-            {/* --- MOBILE LIST VIEW (LEFT IMAGE) --- */}
-            <div className="relative w-36 min-w-[144px] sm:w-full h-full sm:h-full sm:aspect-auto overflow-hidden bg-black/50">
+            {/* --- IMAGE CONTAINER --- */}
+            {/* CHANGE: Adjusted List Image width to w-28 */}
+            <div className={`relative overflow-hidden bg-black/50
+                ${isMobileGrid ? "w-full h-full" : "w-28 min-w-[112px] h-full sm:w-full sm:h-full"}
+            `}>
                 <img 
                     src={snapshotUrl} 
                     alt={webcam.name} 
@@ -123,23 +137,25 @@ const WebcamCard: React.FC<WebcamCardProps> = ({ webcam, isFavorite, onToggleFav
                     }}
                 />
                 
-                {/* Desktop Gradient Overlay (Hidden on Mobile) */}
-                <div className="hidden sm:block absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent opacity-60 sm:opacity-80"></div>
+                {/* Overlay Gradient: Visible on Desktop OR Mobile Grid */}
+                <div className={`absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent opacity-60 sm:opacity-80
+                    ${isMobileGrid ? 'block' : 'hidden sm:block'}
+                `}></div>
 
-                {/* Badge Directe - NO NUMBERS */}
-                <div className="absolute top-2 left-2 z-10 flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-black/60 border border-white/10 backdrop-blur-sm shadow-sm">
-                     <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></div>
-                     <span className="text-[9px] font-bold text-white uppercase tracking-wider">
-                        Directe
+                {/* Badge Directe */}
+                <div className="absolute top-1.5 left-1.5 sm:top-2 sm:left-2 z-10 flex items-center gap-1 sm:gap-1.5 px-1 sm:px-1.5 py-0.5 rounded bg-black/60 border border-white/10 backdrop-blur-sm shadow-sm">
+                     <div className="w-1 h-1 sm:w-1.5 sm:h-1.5 bg-red-500 rounded-full animate-pulse"></div>
+                     <span className="text-[7px] sm:text-[9px] font-bold text-white uppercase tracking-wider">
+                        Live
                     </span>
                 </div>
 
-                {/* Favorite Button (Absolute for both layouts) */}
+                {/* Favorite Button */}
                 <button 
                     onClick={onToggleFavorite}
-                    className="absolute top-1 right-1 sm:top-2 sm:right-2 z-20 p-1.5 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md text-white/70 hover:text-yellow-400 transition-colors"
+                    className="absolute top-1 right-1 sm:top-2 sm:right-2 z-20 p-1 sm:p-1.5 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md text-white/70 hover:text-yellow-400 transition-colors"
                 >
-                    <i className={`ph-fill ${isFavorite ? 'ph-star text-yellow-400' : 'ph-star'}`}></i>
+                    <i className={`ph-fill ${isFavorite ? 'ph-star text-yellow-400' : 'ph-star'} text-xs sm:text-base`}></i>
                 </button>
 
                  {/* Play Icon (Desktop Hover) */}
@@ -150,62 +166,74 @@ const WebcamCard: React.FC<WebcamCardProps> = ({ webcam, isFavorite, onToggleFav
                 </div>
             </div>
 
-            {/* --- CONTENT AREA --- */}
-            
-            {/* MOBILE CONTENT (RIGHT SIDE LIST) */}
-            <div className="sm:hidden flex-1 p-3 flex flex-col justify-center min-w-0">
-                 <h3 className={`font-bold text-sm ${titleColor} truncate leading-tight mb-1`}>
-                    {webcam.name}
-                 </h3>
-                 <p className={`text-xs ${subtitleColor} truncate mb-2`}>{webcam.region}</p>
-                 
-                 <div className={`flex items-center gap-2 text-xs ${infoColor} mt-auto`}>
-                    {weather ? (
-                        <>
-                            <span className={`flex items-center gap-1.5 ${badgeBg} border px-1.5 py-1 rounded`}>
-                                <i className={`ph-fill ${weatherInfo.icon} ${weatherInfo.color} text-sm`}></i>
-                                <span className="font-bold">{weather.temp}°</span>
-                            </span>
-                             <span className={`flex items-center gap-1 ${badgeBg} border px-1.5 py-1 rounded`}>
-                                <i className="ph-fill ph-wind text-blue-300"></i>
-                                <span>{weather.wind}</span>
-                            </span>
-                        </>
-                    ) : (
-                         <span className={`flex items-center gap-1 ${badgeBg} border px-1.5 py-1 rounded opacity-50`}>
-                            <i className="ph-bold ph-spinner animate-spin"></i>
-                        </span>
-                    )}
-                </div>
-            </div>
-
-            {/* DESKTOP CONTENT (OVERLAY - Always White Text on Dark Gradient) */}
-            <div className="hidden sm:flex absolute bottom-0 inset-x-0 p-4 z-10 flex-col justify-end h-full pointer-events-none">
-                <div className="flex justify-between items-end">
-                    <div className="min-w-0 pr-2">
-                        <h3 className="font-bold text-base text-white truncate leading-tight shadow-black drop-shadow-md">
+            {/* --- MOBILE LIST CONTENT (SIDE TEXT) --- */}
+            {/* ONLY visible if Mobile List Mode */}
+            {!isMobileGrid && (
+                <div className="sm:hidden flex-1 px-3 py-2 flex flex-col justify-center min-w-0 relative">
+                     <div className="flex flex-col gap-0 mb-0.5">
+                        <h3 className={`font-bold text-[13px] leading-tight truncate ${titleColor}`}>
                             {webcam.name}
                         </h3>
-                        <p className="text-xs text-white/70 truncate mt-0.5 font-medium">{webcam.region}</p>
-                    </div>
-                </div>
-
-                <div className="mt-2 flex items-center justify-between text-xs text-white/80 border-t border-white/10 pt-2 font-medium">
-                    <div className="flex items-center gap-3">
-                         {weather ? (
+                        <p className={`text-[11px] ${subtitleColor} truncate`}>{webcam.region}</p>
+                     </div>
+                     
+                     {/* Compact Weather & Info Row */}
+                     <div className={`flex items-center gap-3 ${infoColor} mt-auto font-medium text-xs`}>
+                        {weather ? (
                             <>
-                                <span className="flex items-center gap-1.5" title={weatherInfo.label}>
-                                    <i className={`ph-fill ${weatherInfo.icon} ${weatherInfo.color} text-base drop-shadow-sm`}></i>
-                                    <span className="font-bold text-sm">{weather.temp}°</span>
+                                <span className="flex items-center gap-1">
+                                    <i className={`ph-fill ${weatherInfo.icon} ${weatherInfo.color}`}></i>
+                                    <span>{weather.temp}°</span>
                                 </span>
                                 <span className="flex items-center gap-1">
-                                    <i className="ph-fill ph-wind text-white/60"></i>
+                                    <i className="ph-fill ph-wind text-blue-300"></i>
                                     <span>{weather.wind} km/h</span>
                                 </span>
                             </>
+                        ) : (
+                             <span className="flex items-center gap-1 opacity-50">
+                                <i className="ph-bold ph-spinner animate-spin"></i>
+                            </span>
+                        )}
+                        <span className="flex items-center gap-1 ml-auto opacity-70 text-[10px]">
+                            <i className="ph-fill ph-mountain"></i> {webcam.altitude}m
+                        </span>
+                    </div>
+                </div>
+            )}
+
+            {/* --- OVERLAY CONTENT (DESKTOP OR MOBILE GRID) --- */}
+            <div className={`absolute bottom-0 inset-x-0 p-3 sm:p-4 z-10 flex-col justify-end h-full pointer-events-none
+                ${isMobileGrid ? 'flex' : 'hidden sm:flex'}
+            `}>
+                <div className="flex justify-between items-end">
+                    <div className="min-w-0 pr-1">
+                        <h3 className={`font-bold text-white truncate leading-tight shadow-black drop-shadow-md ${isMobileGrid ? 'text-[11px]' : 'text-base'}`}>
+                            {webcam.name}
+                        </h3>
+                        <p className={`text-white/70 truncate mt-0.5 font-medium ${isMobileGrid ? 'text-[9px]' : 'text-xs'}`}>{webcam.region}</p>
+                    </div>
+                </div>
+
+                <div className={`mt-1.5 sm:mt-2 flex items-center justify-between text-white/80 border-t border-white/10 pt-1.5 sm:pt-2 font-medium ${isMobileGrid ? 'text-[10px]' : 'text-xs'}`}>
+                    <div className="flex items-center gap-2 sm:gap-3">
+                         {weather ? (
+                            <>
+                                <span className="flex items-center gap-1" title={weatherInfo.label}>
+                                    <i className={`ph-fill ${weatherInfo.icon} ${weatherInfo.color} ${isMobileGrid ? 'text-xs' : 'text-base'} drop-shadow-sm`}></i>
+                                    <span className={`font-bold ${isMobileGrid ? 'text-xs' : 'text-sm'}`}>{weather.temp}°</span>
+                                </span>
+                                {/* Hide wind on mobile grid to save space */}
+                                {!isMobileGrid && (
+                                    <span className="flex items-center gap-1">
+                                        <i className="ph-fill ph-wind text-white/60"></i>
+                                        <span>{weather.wind} km/h</span>
+                                    </span>
+                                )}
+                            </>
                          ) : (
                             <span className="flex items-center gap-1 opacity-50">
-                                <i className="ph-bold ph-spinner animate-spin"></i> Carregant...
+                                <i className="ph-bold ph-spinner animate-spin"></i>
                             </span>
                          )}
                     </div>
