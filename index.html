@@ -1,16 +1,16 @@
 <!DOCTYPE html>
 <html lang="ca" class="dark">
 <head>
-    <script type="importmap">
-    {
-      "imports": {
-        "react": "https://aistudiocdn.com/react@^19.2.0",
-        "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-        "react/": "https://aistudiocdn.com/react@^19.2.0/",
-        "hls.js": "https://aistudiocdn.com/hls.js@^1.6.15"
-      }
-    }
- </script>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "hls.js": "https://aistudiocdn.com/hls.js@^1.6.15"
+  }
+}
+</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>P4E Nexus</title>
@@ -44,6 +44,9 @@
     
     <!-- Phosphor Icons -->
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+    <!-- Chart.js for Historical Graphs -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <style>
         body {
@@ -75,7 +78,7 @@
         }
 
         /* --- WEATHER ANIMATIONS --- */
-        /* Rain */
+        /* Rain - Realistic Slanted Drop */
         .rain {
             position: absolute;
             left: 0;
@@ -83,19 +86,19 @@
             height: 100%;
             z-index: 10;
             pointer-events: none;
-            background-image: 
-                linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0.4));
-            background-size: 1px 40px;
-            transform: skewX(-15deg);
-            animation: rain-fall 0.4s linear infinite;
+            /* Gradient transparent -> white -> transparent creates a trail */
+            background-image: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0.25) 50%, rgba(255,255,255,0));
+            background-size: 1px 40px; /* Thin long drops */
+            transform: skewX(-10deg); /* Slant */
+            animation: rain-fall 0.25s linear infinite; /* Very fast */
         }
         
         @keyframes rain-fall {
-            0% { background-position: 0 0; }
-            100% { background-position: 5px 40px; }
+            0% { background-position: 0 -100px; }
+            100% { background-position: 10px 100vh; }
         }
 
-        /* Snow */
+        /* Snow - Soft Particles */
         .snow {
             position: absolute;
             top: 0;
