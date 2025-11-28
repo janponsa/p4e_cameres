@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 
 // API Endpoints
@@ -11,7 +10,6 @@ interface TimelapsePlayerProps {
 
 type TimePreset = 'all' | 'morning' | 'day' | 'evening' | 'solar' | 'last3h' | 'custom';
 
-// MAPING TRADUCCIÓ
 const PRESET_LABELS: Record<TimePreset, string> = {
     all: 'Tot',
     morning: 'Matí',
@@ -30,13 +28,15 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
     const [selectedDate, setSelectedDate] = useState<string>('');
     const [activePreset, setActivePreset] = useState<TimePreset>('all');
     
-    // Custom Range State
+    // Custom Range
     const [customStart, setCustomStart] = useState(8);
     const [customEnd, setCustomEnd] = useState(18);
 
     const [currentIndex, setCurrentIndex] = useState(0);
     const [isPlaying, setIsPlaying] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
+    const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
+    const [videoProgress, setVideoProgress] = useState(0);
     const [error, setError] = useState<string | null>(null);
     const [playbackSpeed, setPlaybackSpeed] = useState(100); 
     const [isBuffering, setIsBuffering] = useState(false);
@@ -47,7 +47,7 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
     const abortControllerRef = useRef<AbortController | null>(null);
     const isPausedRef = useRef(false);
 
-    // 1. Fetch Available Dates
+    // 1. Fetch Dates
     useEffect(() => {
         const fetchDates = async () => {
             setIsLoading(true);
@@ -56,7 +56,6 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
                 const response = await fetch(`${TIMELAPSE_API_BASE}${webcamId}/dates`);
                 if (!response.ok) throw new Error('Error al carregar dates');
                 const data = await response.json();
-                
                 if (Array.isArray(data) && data.length > 0) {
                     setDates(data);
                     setSelectedDate(data[0]);
@@ -144,15 +143,15 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
 
         let filtered = processedFrames;
         
-        // LOGICA PRESETS CATALANS
         if (activePreset === 'morning') {
             filtered = processedFrames.filter(f => f.hour >= 6 && f.hour < 13);
-        } else if (activePreset === 'day') { // Migdia/Dia complet
+        } else if (activePreset === 'day') {
              filtered = processedFrames.filter(f => f.hour >= 8 && f.hour < 20);
-        } else if (activePreset === 'evening') { // Tarda
+        } else if (activePreset === 'evening') {
             filtered = processedFrames.filter(f => f.hour >= 13 && f.hour < 21);
         } else if (activePreset === 'solar') {
-            filtered = processedFrames.filter(f => f.hour >= 6 && f.hour <= 21); // Inclou alba i posta
+            // Solar Day: 06:00 to 21:00 (Includes Blue Hour)
+            filtered = processedFrames.filter(f => f.hour >= 6 && f.hour <= 21);
         } else if (activePreset === 'custom') {
             filtered = processedFrames.filter(f => f.hour >= customStart && f.hour < customEnd);
         } else if (activePreset === 'last3h') {
@@ -190,7 +189,7 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
         }
     }, [frames]);
 
-    // 5. Smart Playback Loop
+    // 5. Smart Playback Loop (Frame-Driven)
     useEffect(() => {
         const loop = () => {
             if (!isPlaying || isPausedRef.current) return;
@@ -205,19 +204,22 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
                         isPausedRef.current = false;
                         if(isPlaying) loop(); 
                     }, 2000);
-                    return prev; // Stay on last frame
+                    return prev; 
                 }
 
-                // Smart Buffer Check
-                if (!imageCacheRef.current.has(next)) {
+                // SMART BUFFERING CHECK
+                // Check if next image is loaded AND complete. If not, wait.
+                const nextImg = imageCacheRef.current.get(next);
+                if (!nextImg || !nextImg.complete) {
                     setIsBuffering(true);
-                    preloadNextFrames(next, 5);
-                    timerRef.current = setTimeout(loop, 100); // Retry soon
-                    return prev;
+                    preloadNextFrames(next, 10); // Urgently load more
+                    timerRef.current = setTimeout(loop, 50); // Retry very soon
+                    return prev; // Stay on current frame
                 }
 
+                // Image ready, advance
                 setIsBuffering(false);
-                preloadNextFrames(next + 1, 5);
+                preloadNextFrames(next + 1, 10);
                 timerRef.current = setTimeout(loop, playbackSpeed);
                 return next;
             });
@@ -232,6 +234,111 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
             if (timerRef.current) clearTimeout(timerRef.current);
         };
     }, [isPlaying, frames, playbackSpeed, preloadNextFrames]);
+
+
+    // 6. DOWNLOAD VIDEO GENERATOR
+    const handleDownloadVideo = async () => {
+        if (frames.length === 0) return;
+        setIsGeneratingVideo(true);
+        setIsPlaying(false);
+        setVideoProgress(0);
+
+        try {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error("Canvas init failed");
+
+            // Set canvas size based on first image (assuming all same size)
+            const firstImg = new Image();
+            firstImg.crossOrigin = "anonymous";
+            await new Promise((resolve, reject) => {
+                firstImg.onload = resolve;
+                firstImg.onerror = reject;
+                firstImg.src = frames[0].url;
+            });
+            canvas.width = firstImg.naturalWidth;
+            canvas.height = firstImg.naturalHeight;
+
+            // Setup Recorder
+            const stream = canvas.captureStream(30); // 30 FPS stream
+            const mimeType = MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4' : 'video/webm';
+            // Increased Bitrate for better quality
+            const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8000000 });
+            const chunks: Blob[] = [];
+            
+            recorder.ondataavailable = (e) => { if(e.data.size > 0) chunks.push(e.data); };
+            recorder.onstop = () => {
+                const blob = new Blob(chunks, { type: mimeType });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `timelapse-${webcamId}-${selectedDate}.${mimeType === 'video/mp4' ? 'mp4' : 'webm'}`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                setIsGeneratingVideo(false);
+            };
+
+            recorder.start();
+
+            // Draw Frames Loop
+            for (let i = 0; i < frames.length; i++) {
+                const frame = frames[i];
+                const img = new Image();
+                img.crossOrigin = "anonymous";
+                img.src = frame.url;
+                
+                // Load with Timeout to prevent hanging
+                await new Promise<void>((resolve) => {
+                    const timeout = setTimeout(() => {
+                        console.warn(`Frame ${i} timed out, skipping.`);
+                        resolve(); 
+                    }, 3000); // 3s timeout per frame
+
+                    img.onload = () => {
+                        clearTimeout(timeout);
+                        ctx.drawImage(img, 0, 0);
+                        
+                        // Add Watermark (Reduced Size)
+                        ctx.font = `500 ${canvas.width * 0.012}px "Inter", sans-serif`;
+                        ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
+                        ctx.shadowColor = "rgba(0,0,0,0.8)";
+                        ctx.shadowBlur = 3;
+                        ctx.shadowOffsetX = 1;
+                        ctx.shadowOffsetY = 1;
+                        ctx.fillText(`${frame.time} - © Projecte 4 Estacions`, 20, canvas.height - 20);
+                        ctx.shadowColor = "transparent";
+                        
+                        resolve();
+                    };
+                    img.onerror = () => {
+                        clearTimeout(timeout);
+                        resolve(); // Skip bad frames
+                    }
+                });
+
+                // Request animation frame to ensure recorder picks it up
+                await new Promise(r => requestAnimationFrame(r));
+                
+                setVideoProgress(Math.round(((i + 1) / frames.length) * 100));
+            }
+
+            // Add 2 seconds of the last frame
+            const lastFrameDelay = 2000;
+            const startTime = Date.now();
+            while (Date.now() - startTime < lastFrameDelay) {
+                 await new Promise(r => requestAnimationFrame(r));
+            }
+
+            recorder.stop();
+
+        } catch (e) {
+            console.error(e);
+            alert("Error generant el vídeo");
+            setIsGeneratingVideo(false);
+        }
+    };
 
 
     const togglePlay = (e: React.MouseEvent) => {
@@ -280,11 +387,22 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
                 />
             )}
 
-            {isBuffering && (
+            {isBuffering && !isGeneratingVideo && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                     <div className="bg-black/50 p-3 rounded-full backdrop-blur-sm">
                         <i className="ph-bold ph-spinner animate-spin text-2xl text-white"></i>
                     </div>
+                </div>
+            )}
+
+            {isGeneratingVideo && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-50 pointer-events-auto cursor-wait">
+                    <i className="ph-bold ph-film-strip animate-bounce text-4xl text-blue-500 mb-4"></i>
+                    <h3 className="text-white font-bold text-lg">Generant Vídeo...</h3>
+                    <div className="w-64 h-2 bg-gray-700 rounded-full mt-4 overflow-hidden">
+                        <div className="h-full bg-blue-500 transition-all duration-100" style={{width: `${videoProgress}%`}}></div>
+                    </div>
+                    <span className="text-white/70 text-xs mt-2">{videoProgress}%</span>
                 </div>
             )}
 
@@ -324,15 +442,14 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
                             {playbackSpeed === 100 ? '1x' : playbackSpeed === 50 ? '2x' : '0.5x'}
                         </button>
                         
-                        <a 
-                            href={currentFrame?.url} 
-                            download={`timelapse.jpg`}
-                            target="_blank"
-                            rel="noreferrer"
+                        <button 
+                            onClick={handleDownloadVideo}
+                            disabled={isGeneratingVideo}
                             className="text-white/80 hover:text-white p-1.5 hover:bg-white/10 rounded transition-colors"
+                            title="Descarregar Vídeo"
                         >
                             <i className="ph-bold ph-download-simple text-lg"></i>
-                        </a>
+                        </button>
                     </div>
                 </div>
             </div>

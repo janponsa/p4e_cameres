@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { Webcam, WeatherData } from '../types';
 import VideoPlayer from './VideoPlayer';
@@ -243,7 +242,10 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                 const data = await res.json();
                 
                 data.forEach((d: any) => {
-                    const date = new Date(d.data_lectura); 
+                    // FIX: METEOCAT UTC + 30 MINUTS LOGIC (Same as Current Data)
+                    const date = new Date(d.data_lectura + 'Z'); 
+                    date.setMinutes(date.getMinutes() + 30);
+
                     labels.push(`${date.getHours()}:${String(date.getMinutes()).padStart(2,'0')}`);
                     let val = parseFloat(d.valor_lectura);
                     if (type === 'wind') val = val * 3.6; // m/s to km/h
@@ -251,24 +253,25 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                 });
 
             } else if (webcam.meteoStationType === 'wunderground') {
-                // FETCH YESTERDAY AND TODAY TO ENSURE FULL 24H COVERAGE
+                // FETCH YESTERDAY (History) AND TODAY (Observations/1day)
                 const getWGDateStr = (d: Date) => d.toISOString().slice(0,10).replace(/-/g,'');
                 const today = new Date();
                 const yesterday = new Date(today);
                 yesterday.setDate(yesterday.getDate() - 1);
 
-                const datesToFetch = [getWGDateStr(yesterday), getWGDateStr(today)];
-                let allObservations: any[] = [];
+                // URL 1: History Yesterday
+                const urlYesterday = `https://api.weather.com/v2/pws/history/all?stationId=${webcam.meteoStationId}&format=json&units=m&date=${getWGDateStr(yesterday)}&numericPrecision=decimal&apiKey=${WG_API_KEY}`;
+                // URL 2: Observations Today (observations/all/1day)
+                const urlToday = `https://api.weather.com/v2/pws/observations/all/1day?apiKey=${WG_API_KEY}&stationId=${webcam.meteoStationId}&numericPrecision=decimal&format=json&units=m`;
 
-                const promises = datesToFetch.map(dateStr => 
-                    fetch(`https://api.weather.com/v2/pws/history/all?stationId=${webcam.meteoStationId}&format=json&units=m&date=${dateStr}&numericPrecision=decimal&apiKey=${WG_API_KEY}`)
-                        .then(res => res.json())
-                        .then(data => data.observations || [])
-                        .catch(() => [])
-                );
+                const [resYesterday, resToday] = await Promise.all([
+                    fetch(urlYesterday).then(r => r.json()).catch(() => ({})),
+                    fetch(urlToday).then(r => r.json()).catch(() => ({}))
+                ]);
 
-                const results = await Promise.all(promises);
-                allObservations = results.flat();
+                const obsYesterday = resYesterday.observations || [];
+                const obsToday = resToday.observations || [];
+                const allObservations = [...obsYesterday, ...obsToday];
                 
                 if (allObservations.length > 0) {
                     // FILTER LAST 24 HOURS
@@ -472,13 +475,13 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                             </div>
                             
                             {weather?.isReal ? (
-                                <div className="flex flex-col items-end">
+                                <div className="flex flex-col items-end min-w-0">
                                     <span className={`text-[10px] font-bold flex items-center gap-1 ${weather.source === 'SMC' ? 'text-blue-500' : weather.source === 'WG' ? 'text-orange-500' : 'text-green-500'}`}>
                                         {weather.source === 'SMC' && <i className="ph-bold ph-globe"></i>}
                                         {weather.source}
                                     </span>
-                                    {/* Observation Time */}
-                                    <span className={`text-[9px] ${textMuted}`}>
+                                    {/* Observation Time - Truncate for long station names on mobile */}
+                                    <span className={`text-[9px] ${textMuted} truncate max-w-[110px] sm:max-w-none text-right`}>
                                         {weather.time ? `Dades: ${weather.time}` : 'En directe'}
                                         {webcam.meteoStationName && ` · ${webcam.meteoStationName}`}
                                     </span>
@@ -511,7 +514,7 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                                 <div className={`rounded-xl p-3 flex flex-col justify-between h-20 relative overflow-hidden ${gridItemClass}`}>
                                     <div className="flex items-center gap-1.5 z-10">
                                         <i className="ph-fill ph-drop text-blue-400 text-sm"></i>
-                                        <span className={`text-[10px] uppercase font-bold tracking-wider ${labelClass}`}>Pluja 24h</span>
+                                        <span className={`text-[10px] uppercase font-bold tracking-wider ${labelClass}`}>Pluja Avui</span>
                                     </div>
                                     <div className="flex items-baseline gap-0.5 z-10">
                                         <span className={`text-2xl font-bold tracking-tight ${textPrimary}`}>{weather.rain}</span>
