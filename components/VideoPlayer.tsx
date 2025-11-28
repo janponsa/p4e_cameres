@@ -36,6 +36,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
 
     const isVielha = webcamId === 'vielha';
 
+    // Logo Logic based on Time of Day
+    const logoUrl = (timeOfDay === 'night' || timeOfDay === 'evening')
+        ? "https://app.projecte4estacions.com/images/logo_p4e_2023_h_blanc_200.png"
+        : "https://app.projecte4estacions.com/images/logo_p4e_2023_h_blau_200.png";
+
     useEffect(() => {
         setIsLoading(true);
         setError(null);
@@ -339,6 +344,11 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ streamUrl, poster, timeOfDay,
                     {poster && <p className="text-xs text-gray-500 mt-2">Mostrant última imatge estàtica</p>}
                 </div>
             )}
+
+            {/* P4E LOGO OVERLAY */}
+            <div className={`absolute top-4 left-4 z-30 transition-opacity duration-300 pointer-events-none ${showControls || isRecording || isLoading || error ? 'opacity-100' : 'opacity-0'}`}>
+                <img src={logoUrl} alt="Projecte 4 Estacions" className="h-8 sm:h-10 w-auto drop-shadow-md" />
+            </div>
 
             {/* LIVE/REC BADGE */}
             <div className={`absolute top-4 right-4 z-30 flex flex-col items-end gap-2 transition-opacity duration-300 ${showControls || isRecording || isLoading || error ? 'opacity-100' : 'opacity-0'}`}>

@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 
-// API Endpoints derived from original code
+// API Endpoints
 const TIMELAPSE_API_BASE = 'https://cams.projecte4estacions.com/api/galeria/';
 const TIMELAPSE_IMAGE_BASE = 'https://cams.projecte4estacions.com/timelapses/';
 
@@ -9,35 +9,43 @@ interface TimelapsePlayerProps {
     webcamId: string;
 }
 
-type TimePreset = 'all' | 'morning' | 'evening' | 'last3h';
+type TimePreset = 'all' | 'morning' | 'day' | 'evening' | 'solar' | 'last3h' | 'custom';
+
+// MAPING TRADUCCIÓ
+const PRESET_LABELS: Record<TimePreset, string> = {
+    all: 'Tot',
+    morning: 'Matí',
+    day: 'Dia',
+    evening: 'Tarda',
+    solar: 'Sol',
+    last3h: '3h',
+    custom: 'Personalitzat'
+};
 
 const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
-    // Dades crues de l'API (noms de fitxers)
     const [rawImages, setRawImages] = useState<string[]>([]);
-    
-    // Frames filtrats per mostrar
-    const [frames, setFrames] = useState<{url: string, time: string, timestamp: number}[]>([]);
+    const [frames, setFrames] = useState<{url: string, time: string, timestamp: number, hour: number}[]>([]);
     
     const [dates, setDates] = useState<string[]>([]);
     const [selectedDate, setSelectedDate] = useState<string>('');
     const [activePreset, setActivePreset] = useState<TimePreset>('all');
     
+    // Custom Range State
+    const [customStart, setCustomStart] = useState(8);
+    const [customEnd, setCustomEnd] = useState(18);
+
     const [currentIndex, setCurrentIndex] = useState(0);
     const [isPlaying, setIsPlaying] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
-    const [imageLoading, setImageLoading] = useState(false); // Per loading frame a frame
     const [error, setError] = useState<string | null>(null);
-    const [playbackSpeed, setPlaybackSpeed] = useState(100); // ms per frame
+    const [playbackSpeed, setPlaybackSpeed] = useState(100); 
+    const [isBuffering, setIsBuffering] = useState(false);
+    const [showControls, setShowControls] = useState(true); // TAP TO HIDE
 
-    // Mobile specific controls visibility
-    const [showControls, setShowControls] = useState(true);
-    // Video Generation State
-    const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
-    const [generationProgress, setGenerationProgress] = useState(0);
-
-    const timerRef = useRef<number | null>(null);
+    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const imageCacheRef = useRef<Map<number, HTMLImageElement>>(new Map());
     const abortControllerRef = useRef<AbortController | null>(null);
+    const isPausedRef = useRef(false);
 
     // 1. Fetch Available Dates
     useEffect(() => {
@@ -51,7 +59,7 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
                 
                 if (Array.isArray(data) && data.length > 0) {
                     setDates(data);
-                    setSelectedDate(data[0]); // Select most recent date
+                    setSelectedDate(data[0]);
                 } else {
                     setError("No hi ha dates disponibles");
                     setIsLoading(false);
@@ -62,16 +70,14 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
                 setIsLoading(false);
             }
         };
-
         fetchDates();
     }, [webcamId]);
 
-    // 2. Fetch Images for Selected Date
+    // 2. Fetch Images
     useEffect(() => {
         if (!selectedDate) return;
 
         const fetchImages = async () => {
-            // Cancel·lar fetchs anteriors si n'hi ha
             if (abortControllerRef.current) abortControllerRef.current.abort();
             abortControllerRef.current = new AbortController();
 
@@ -102,11 +108,10 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
                 setIsLoading(false);
             }
         };
-
         fetchImages();
     }, [webcamId, selectedDate]);
 
-    // 3. Filter Frames based on Preset
+    // 3. Filter Frames
     useEffect(() => {
         if (rawImages.length === 0) return;
 
@@ -115,19 +120,16 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
         imageCacheRef.current.clear();
 
         const processedFrames = rawImages.map(name => {
-             // Parse Time: YYYY-MM-DD_HH-MM-SS.jpg or HH-MM-SS.jpg
              let timeStr = "00:00";
              let hour = 0;
              let timestamp = 0;
-             
              try {
                  const parts = name.split('_');
                  const timePart = parts.length > 1 ? parts[1] : parts[0];
-                 const cleanTime = timePart.replace('.jpg', '').split('-'); // [HH, MM, SS]
+                 const cleanTime = timePart.replace('.jpg', '').split('-'); 
                  if (cleanTime.length >= 2) {
                      hour = parseInt(cleanTime[0], 10);
                      timeStr = `${cleanTime[0]}:${cleanTime[1]}`;
-                     // Create pseudo timestamp for sorting/filtering
                      timestamp = hour * 60 + parseInt(cleanTime[1], 10); 
                  }
              } catch (e) {}
@@ -140,17 +142,20 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
              };
         });
 
-        // Apply Filter
         let filtered = processedFrames;
         
+        // LOGICA PRESETS CATALANS
         if (activePreset === 'morning') {
-            // 06:00 to 10:00
-            filtered = processedFrames.filter(f => f.hour >= 6 && f.hour < 10);
-        } else if (activePreset === 'evening') {
-            // 17:00 to 21:00
-            filtered = processedFrames.filter(f => f.hour >= 17 && f.hour < 21);
+            filtered = processedFrames.filter(f => f.hour >= 6 && f.hour < 13);
+        } else if (activePreset === 'day') { // Migdia/Dia complet
+             filtered = processedFrames.filter(f => f.hour >= 8 && f.hour < 20);
+        } else if (activePreset === 'evening') { // Tarda
+            filtered = processedFrames.filter(f => f.hour >= 13 && f.hour < 21);
+        } else if (activePreset === 'solar') {
+            filtered = processedFrames.filter(f => f.hour >= 6 && f.hour <= 21); // Inclou alba i posta
+        } else if (activePreset === 'custom') {
+            filtered = processedFrames.filter(f => f.hour >= customStart && f.hour < customEnd);
         } else if (activePreset === 'last3h') {
-             // Take the last frame time and go back 180 mins
              if (processedFrames.length > 0) {
                  const lastTs = processedFrames[processedFrames.length - 1].timestamp;
                  filtered = processedFrames.filter(f => f.timestamp >= (lastTs - 180));
@@ -158,34 +163,23 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
         }
 
         if (filtered.length === 0) {
-             // Fallback if filter returns empty (e.g. requesting sunset at 10am)
              setFrames(processedFrames); 
-             setActivePreset('all'); 
+             if (activePreset !== 'custom') setActivePreset('all'); 
         } else {
              setFrames(filtered);
         }
 
-    }, [rawImages, activePreset, webcamId, selectedDate]);
+    }, [rawImages, activePreset, webcamId, selectedDate, customStart, customEnd]);
 
-
-    // 4. Preload logic (Optimized for Memory)
+    // 4. Preload
     const preloadNextFrames = useCallback((startIndex: number, count: number) => {
         if (frames.length === 0) return;
-        
-        // 1. Clean cache (remove images far from current index)
         const cache = imageCacheRef.current;
-        if (cache.size > 50) { // Keep max 50 images in memory
-            for (const key of cache.keys()) {
-                // If key is far from startIndex (circular distance)
-                const dist = Math.abs(key - startIndex);
-                const circularDist = Math.min(dist, frames.length - dist);
-                if (circularDist > 30) {
-                    cache.delete(key);
-                }
-            }
+        if (cache.size > 50) {
+             for (const [key] of cache) {
+                if (Math.abs(key - startIndex) > 20) cache.delete(key);
+             }
         }
-
-        // 2. Preload forward
         for (let i = 0; i < count; i++) {
             const idx = (startIndex + i) % frames.length;
             if (!cache.has(idx)) {
@@ -196,131 +190,77 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
         }
     }, [frames]);
 
-    // 5. Playback Loop (WITH LOOPING)
+    // 5. Smart Playback Loop
     useEffect(() => {
-        if (isPlaying && frames.length > 0) {
-            timerRef.current = window.setInterval(() => {
-                setCurrentIndex((prev) => {
-                    const next = (prev + 1);
-                    if (next >= frames.length) {
-                        return 0; // Loop back
-                    }
-                    // Preload less aggressively to save bandwidth
-                    if (next % 5 === 0) preloadNextFrames(next, 10);
-                    return next;
-                });
-            }, playbackSpeed);
-        } else if (timerRef.current) {
-            clearInterval(timerRef.current);
+        const loop = () => {
+            if (!isPlaying || isPausedRef.current) return;
+
+            setCurrentIndex(prev => {
+                const next = (prev + 1) % frames.length;
+                
+                // Pause at end of loop for 2 seconds
+                if (next === 0 && prev === frames.length - 1) {
+                    isPausedRef.current = true;
+                    setTimeout(() => {
+                        isPausedRef.current = false;
+                        if(isPlaying) loop(); 
+                    }, 2000);
+                    return prev; // Stay on last frame
+                }
+
+                // Smart Buffer Check
+                if (!imageCacheRef.current.has(next)) {
+                    setIsBuffering(true);
+                    preloadNextFrames(next, 5);
+                    timerRef.current = setTimeout(loop, 100); // Retry soon
+                    return prev;
+                }
+
+                setIsBuffering(false);
+                preloadNextFrames(next + 1, 5);
+                timerRef.current = setTimeout(loop, playbackSpeed);
+                return next;
+            });
+        };
+
+        if (isPlaying) {
+            isPausedRef.current = false;
+            loop();
         }
 
         return () => {
-            if (timerRef.current) clearInterval(timerRef.current);
+            if (timerRef.current) clearTimeout(timerRef.current);
         };
     }, [isPlaying, frames, playbackSpeed, preloadNextFrames]);
 
-    // 6. Manual Scrubbing
-    const handleScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const val = Number(e.target.value);
-        setIsPlaying(false);
-        setCurrentIndex(val);
-        preloadNextFrames(val, 2);
+
+    const togglePlay = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        setIsPlaying(p => !p);
     };
 
-    // 7. Generate Video (Non-blocking)
-    const handleDownloadVideo = async () => {
-        if (frames.length === 0 || isGeneratingVideo) return;
+    const handleContainerClick = () => {
+        setShowControls(prev => !prev);
+    };
+
+    const handleScrubberChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const val = parseInt(e.target.value, 10);
+        setCurrentIndex(val);
         setIsPlaying(false);
-        setIsGeneratingVideo(true);
-        setGenerationProgress(0);
-
-        try {
-            // Get dimensions from first image
-            const firstImg = new Image();
-            firstImg.crossOrigin = "anonymous";
-            firstImg.src = frames[0].url;
-            await new Promise((resolve) => { firstImg.onload = resolve; });
-
-            const canvas = document.createElement('canvas');
-            canvas.width = firstImg.naturalWidth || 1280;
-            canvas.height = firstImg.naturalHeight || 720;
-            const ctx = canvas.getContext('2d');
-            
-            if (!ctx) throw new Error('No canvas context');
-
-            // Setup MediaRecorder
-            const stream = canvas.captureStream(30); // 30 FPS stream
-            const recorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
-            const chunks: Blob[] = [];
-            
-            recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-            recorder.onstop = () => {
-                const blob = new Blob(chunks, { type: 'video/webm' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `timelapse-${webcamId}-${selectedDate}.webm`;
-                a.click();
-                URL.revokeObjectURL(url);
-                setIsGeneratingVideo(false);
-                setGenerationProgress(0);
-            };
-
-            recorder.start();
-
-            // Draw frames one by one with delays to unblock UI
-            for (let i = 0; i < frames.length; i++) {
-                // Allow UI updates every few frames
-                if (i % 10 === 0) {
-                    setGenerationProgress(Math.round((i / frames.length) * 100));
-                    await new Promise(resolve => setTimeout(resolve, 0)); 
-                }
-
-                const img = new Image();
-                img.crossOrigin = "anonymous";
-                img.src = frames[i].url;
-                await new Promise((resolve) => {
-                    img.onload = () => {
-                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                        // Add watermark
-                        ctx.font = "bold 24px sans-serif";
-                        ctx.fillStyle = "white";
-                        ctx.shadowColor = "black";
-                        ctx.shadowBlur = 4;
-                        ctx.fillText(frames[i].time, 30, 50);
-                        ctx.shadowBlur = 0;
-                        resolve(null);
-                    };
-                    img.onerror = () => {
-                        // Skip broken images
-                        resolve(null); 
-                    }
-                });
-            }
-
-            recorder.stop();
-
-        } catch (e) {
-            console.error("Error generating video", e);
-            alert("Error generant el vídeo. Prova-ho en un navegador modern.");
-            setIsGeneratingVideo(false);
-        }
     };
 
     if (isLoading && frames.length === 0) {
         return (
-            <div className="w-full h-full flex flex-col items-center justify-center bg-black/60 text-white">
-                <i className="ph-bold ph-spinner animate-spin text-3xl mb-2 text-blue-400"></i>
-                <span className="text-sm font-medium">Carregant Timelapse...</span>
+            <div className="w-full h-full flex items-center justify-center bg-black text-white">
+                <i className="ph-bold ph-spinner animate-spin text-3xl"></i>
             </div>
         );
     }
-
-    if (error || (frames.length === 0 && !isLoading)) {
-         return (
-            <div className="w-full h-full flex flex-col items-center justify-center bg-black/60 text-white p-4 text-center">
-                <i className="ph-bold ph-warning-circle text-3xl mb-2 text-white/50"></i>
-                <span className="text-sm">{error || "No hi ha imatges disponibles"}</span>
+    
+    if (error) {
+        return (
+            <div className="w-full h-full flex items-center justify-center bg-black text-white p-4 text-center">
+                <span className="text-sm">{error}</span>
             </div>
         );
     }
@@ -329,123 +269,127 @@ const TimelapsePlayer: React.FC<TimelapsePlayerProps> = ({ webcamId }) => {
 
     return (
         <div 
-            className="relative w-full h-full bg-black group select-none overflow-hidden"
-            onClick={() => setShowControls(!showControls)} // Toggle on mobile tap
+            className="relative w-full h-full bg-black group/player select-none cursor-pointer"
+            onClick={handleContainerClick}
         >
-            {/* Loading Indicator for current frame */}
-            {imageLoading && (
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
-                     <i className="ph-bold ph-spinner animate-spin text-2xl text-white/50"></i>
+            {currentFrame && (
+                <img 
+                    src={currentFrame.url} 
+                    alt={currentFrame.time}
+                    className="w-full h-full object-contain"
+                />
+            )}
+
+            {isBuffering && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className="bg-black/50 p-3 rounded-full backdrop-blur-sm">
+                        <i className="ph-bold ph-spinner animate-spin text-2xl text-white"></i>
+                    </div>
                 </div>
             )}
 
-            {/* Main Image Display */}
-            <img 
-                src={currentFrame?.url} 
-                alt={`Timelapse ${currentFrame?.time}`}
-                className="w-full h-full object-contain bg-black"
-                onLoad={() => setImageLoading(false)}
-                onLoadStart={() => setImageLoading(true)}
-            />
-            
-            {/* Generating Video Overlay */}
-            {isGeneratingVideo && (
-                <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm">
-                    <i className="ph-bold ph-film-strip animate-spin text-4xl text-blue-500 mb-2"></i>
-                    <span className="text-white font-bold">Generant vídeo...</span>
-                    <span className="text-blue-400 font-mono mt-2">{generationProgress}%</span>
-                    <span className="text-white/60 text-xs mt-1">Si us plau, espera</span>
-                </div>
-            )}
-
-            {/* Top Bar: Date & Presets */}
-            <div className={`absolute top-0 inset-x-0 p-3 sm:p-4 bg-gradient-to-b from-black/80 to-transparent flex flex-wrap items-center justify-between gap-2 z-20 transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0'}`}>
-                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                    <select 
-                        value={selectedDate}
-                        onChange={(e) => setSelectedDate(e.target.value)}
-                        className="bg-white/10 backdrop-blur-md text-white border border-white/20 rounded-lg px-2 py-1 text-[10px] sm:text-xs font-medium focus:outline-none hover:bg-white/20 transition-colors"
-                    >
-                        {dates.map(date => (
-                            <option key={date} value={date} className="text-black">{date}</option>
-                        ))}
-                    </select>
-                    
-                    <span className="font-mono text-base sm:text-xl font-bold text-white drop-shadow-md">{currentFrame?.time}</span>
-                </div>
-
-                <div className="flex bg-black/40 backdrop-blur-md rounded-lg p-0.5 sm:p-1 border border-white/10" onClick={(e) => e.stopPropagation()}>
-                    {(['all', 'last3h', 'morning', 'evening'] as TimePreset[]).map(preset => (
-                        <button 
-                            key={preset}
-                            onClick={() => setActivePreset(preset)} 
-                            className={`text-[9px] sm:text-[10px] px-1.5 sm:px-2 py-1 rounded transition-colors uppercase font-medium ${activePreset === preset ? 'bg-white text-black' : 'text-white/60 hover:text-white'}`}
-                        >
-                            {preset === 'all' ? 'Tot' : preset === 'last3h' ? '3h' : preset === 'morning' ? 'Matí' : 'Tarda'}
+            {/* CONTROLS OVERLAY (Tap to Hide) */}
+            <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-4 flex flex-col gap-3 transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+                <input 
+                    type="range" 
+                    min={0} 
+                    max={frames.length - 1} 
+                    value={currentIndex}
+                    onChange={handleScrubberChange}
+                    onClick={e => e.stopPropagation()}
+                    className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer hover:h-1.5 transition-all accent-blue-500"
+                />
+                
+                <div className="flex items-center justify-between" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center gap-4">
+                        <button onClick={togglePlay} className="text-white hover:text-blue-400 transition-colors">
+                            <i className={`ph-fill text-3xl ${isPlaying ? 'ph-pause' : 'ph-play'}`}></i>
                         </button>
-                    ))}
+                        
+                        <div className="flex flex-col">
+                             <span className="text-white font-mono font-bold text-lg leading-none">
+                                {currentFrame?.time || '--:--'}
+                            </span>
+                            <span className="text-white/50 text-[10px] font-medium uppercase tracking-wider">
+                                {selectedDate}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        <button 
+                            onClick={() => setPlaybackSpeed(s => s === 100 ? 50 : s === 50 ? 200 : 100)}
+                            className="text-xs font-bold text-white/80 bg-white/10 hover:bg-white/20 px-2 py-1 rounded transition-colors"
+                        >
+                            {playbackSpeed === 100 ? '1x' : playbackSpeed === 50 ? '2x' : '0.5x'}
+                        </button>
+                        
+                        <a 
+                            href={currentFrame?.url} 
+                            download={`timelapse.jpg`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-white/80 hover:text-white p-1.5 hover:bg-white/10 rounded transition-colors"
+                        >
+                            <i className="ph-bold ph-download-simple text-lg"></i>
+                        </a>
+                    </div>
                 </div>
             </div>
 
-            {/* Controls Overlay (Bottom) */}
-            <div className={`absolute inset-x-0 bottom-0 p-3 sm:p-4 bg-gradient-to-t from-black/90 to-transparent transition-opacity duration-300 flex flex-col gap-2 sm:gap-3 z-20 ${showControls ? 'opacity-100' : 'opacity-0'}`} onClick={(e) => e.stopPropagation()}>
-                
-                {/* Progress Bar / Scrubber */}
-                <div className="relative w-full h-6 flex items-center group/scrubber">
-                    <input 
-                        type="range" 
-                        min="0" 
-                        max={Math.max(0, frames.length - 1)} 
-                        value={currentIndex}
-                        onChange={handleScrub}
-                        className="w-full z-20 opacity-0 cursor-pointer h-full absolute inset-0" 
-                    />
-                    {/* Visual Track */}
-                    <div className="w-full h-1 bg-white/30 rounded-full overflow-hidden relative z-10 pointer-events-none group-hover/scrubber:h-1.5 transition-all">
-                        <div 
-                            className="h-full bg-blue-500 transition-all duration-75 ease-out"
-                            style={{ width: `${(currentIndex / Math.max(1, frames.length - 1)) * 100}%` }}
-                        ></div>
+            {/* TOP CONTROLS (Compact Dropdown + Custom Range) */}
+            <div className={`absolute top-0 inset-x-0 p-3 flex flex-wrap justify-between items-start bg-gradient-to-b from-black/80 to-transparent transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+                <div className="flex items-center gap-2 pointer-events-auto" onClick={e => e.stopPropagation()}>
+                    
+                    {/* Compact Filter Menu */}
+                    <div className="relative group">
+                        <div className="flex items-center bg-black/40 text-white border border-white/20 rounded-lg px-2 py-1 backdrop-blur-md">
+                            <i className="ph-bold ph-funnel text-xs mr-2 opacity-70"></i>
+                            <select 
+                                value={activePreset}
+                                onChange={(e) => setActivePreset(e.target.value as TimePreset)}
+                                className="bg-transparent text-xs font-bold uppercase focus:outline-none appearance-none pr-4 cursor-pointer"
+                            >
+                                {Object.entries(PRESET_LABELS).map(([key, label]) => (
+                                    <option key={key} value={key} className="text-black">{label}</option>
+                                ))}
+                            </select>
+                            <i className="ph-bold ph-caret-down absolute right-2 text-[10px] pointer-events-none opacity-50"></i>
+                        </div>
                     </div>
+
+                    {/* CUSTOM RANGE SELECTORS (Visible only if Custom) */}
+                    {activePreset === 'custom' && (
+                        <div className="flex items-center gap-1 bg-black/40 border border-white/20 rounded-lg px-2 py-1 backdrop-blur-md">
+                            <select 
+                                value={customStart}
+                                onChange={e => setCustomStart(Number(e.target.value))}
+                                className="bg-transparent text-xs text-white focus:outline-none cursor-pointer"
+                            >
+                                {[...Array(24)].map((_, i) => <option key={i} value={i} className="text-black">{i}h</option>)}
+                            </select>
+                            <span className="text-white/50 text-[10px]">-</span>
+                            <select 
+                                value={customEnd}
+                                onChange={e => setCustomEnd(Number(e.target.value))}
+                                className="bg-transparent text-xs text-white focus:outline-none cursor-pointer"
+                            >
+                                {[...Array(24)].map((_, i) => <option key={i} value={i} className="text-black">{i}h</option>)}
+                            </select>
+                        </div>
+                    )}
                 </div>
 
-                <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                        <button 
-                            onClick={() => setIsPlaying(!isPlaying)}
-                            className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-full bg-white text-black hover:bg-blue-400 hover:text-white transition-all shadow-lg"
-                        >
-                            <i className={`ph-fill ${isPlaying ? 'ph-pause' : 'ph-play'} text-base sm:text-xl`}></i>
-                        </button>
-                        
-                        <button 
-                            onClick={handleDownloadVideo}
-                            title="Descarregar Vídeo"
-                            className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-full bg-white/10 border border-white/20 text-white hover:bg-white hover:text-black transition-all backdrop-blur-md"
-                        >
-                             <i className="ph-bold ph-download-simple text-sm sm:text-lg"></i>
-                        </button>
-                    </div>
-
-                    <span className="text-[10px] sm:text-xs text-white/50 font-mono hidden sm:inline">
-                        {currentIndex + 1} / {frames.length} frames
-                    </span>
-
-                    {/* Speed Control */}
-                    <div className="flex items-center gap-1 bg-black/40 backdrop-blur-md rounded-full px-1 border border-white/10">
-                        <button 
-                            onClick={() => setPlaybackSpeed(200)} 
-                            className={`text-[9px] sm:text-[10px] px-2 py-1 rounded-full ${playbackSpeed === 200 ? 'bg-white text-black' : 'text-white/50'}`}
-                        >1x</button>
-                        <button 
-                            onClick={() => setPlaybackSpeed(100)} 
-                            className={`text-[9px] sm:text-[10px] px-2 py-1 rounded-full ${playbackSpeed === 100 ? 'bg-white text-black' : 'text-white/50'}`}
-                        >2x</button>
-                        <button 
-                            onClick={() => setPlaybackSpeed(50)} 
-                            className={`text-[9px] sm:text-[10px] px-2 py-1 rounded-full ${playbackSpeed === 50 ? 'bg-white text-black' : 'text-white/50'}`}
-                        >4x</button>
-                    </div>
+                <div className="pointer-events-auto" onClick={e => e.stopPropagation()}>
+                     <select 
+                        value={selectedDate}
+                        onChange={(e) => setSelectedDate(e.target.value)}
+                        className="bg-black/40 text-white text-xs border border-white/20 rounded-lg px-2 py-1 backdrop-blur-md focus:outline-none"
+                     >
+                         {dates.map(date => (
+                             <option key={date} value={date} className="text-black">{date}</option>
+                         ))}
+                     </select>
                 </div>
             </div>
         </div>
