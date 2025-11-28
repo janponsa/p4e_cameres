@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { ALL_WEBCAMS, SNAPSHOT_BASE_URL } from './constants';
 import WebcamCard from './components/WebcamCard';
@@ -73,21 +72,24 @@ function App() {
       return () => clearInterval(interval);
   }, []);
 
-  // 2. Fetch Sessions & Verify Inactive Cams (Smart Filter)
+  // 2. Fetch Sessions & Verify Cameras (LOGICA ACTUALITZADA)
   useEffect(() => {
     const fetchAndVerify = async () => {
+        // No posem loading a true cada cop per evitar parpelleig en refrescos
+        // Només la primera vegada o si volem forçar
+        if (activeCameraIds.size === 0) setIsSessionLoading(true);
+
         try {
-            // A. Get Sessions (Live viewers)
+            // PAS 1: Obtenir Sessions (Clients connectats)
             const response = await fetch(SESSIONS_API_URL);
-            if (!response.ok) throw new Error('Error network');
+            if (!response.ok) throw new Error('Error network sessions');
             const data = await response.json();
             setSessionData(data);
 
-            // B. Determine Active Cams
             const verifiedIds = new Set<string>();
             const promises: Promise<void>[] = [];
 
-            // Get Today's date YYYY-MM-DD
+            // Data d'avui per comprovar timelapses YYYY-MM-DD
             const now = new Date();
             const year = now.getFullYear();
             const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -95,35 +97,50 @@ function App() {
             const todayStr = `${year}-${month}-${day}`;
 
             ALL_WEBCAMS.forEach(cam => {
-                // 1. Si està a sessions (té espectadors), és vàlida segur
+                // PRIORITAT 1: Està a API Sessions? (Té espectadors) -> ONLINE
                 if (Object.prototype.hasOwnProperty.call(data, cam.id)) {
                     verifiedIds.add(cam.id);
                 } else {
-                    // 2. Si NO està a sessions (0 espectadors), comprovem l'última imatge del Timelapse
-                    // Això és més fiable que snapshots/id.jpg
+                    // PRIORITAT 2: Comprovar Timelapse (Per les que tenen 0 espectadors)
+                    // Mirem si l'última imatge generada és recent (< 10 minuts)
                     const p = fetch(`${TIMELAPSE_API_BASE}${cam.id}/dates`)
-                        .then(r => r.json())
+                        .then(r => {
+                            if(!r.ok) return [];
+                            return r.json();
+                        })
                         .then(async (dates: string[]) => {
-                            // Si tenim dates i l'última és avui
+                            // Si hi ha dates i la primera és AVUI
                             if (Array.isArray(dates) && dates.length > 0 && dates[0] === todayStr) {
-                                // Consultem imatges d'avui
+                                // Descarreguem llista imatges d'avui
                                 const imgRes = await fetch(`${TIMELAPSE_API_BASE}${cam.id}/${todayStr}/images`);
+                                if(!imgRes.ok) return;
                                 const images = await imgRes.json();
+                                
                                 if (Array.isArray(images) && images.length > 0) {
-                                    // Agafem l'última imatge: image-YYYY-MM-DD_HH-MM-SS.jpg
+                                    // Agafem l'última: image-2025-11-28_12-48-07.jpg
                                     const lastImage = images[images.length - 1];
                                     try {
-                                        // Extraiem l'hora del nom
-                                        const timePart = lastImage.split('_')[1].split('.')[0]; // HH-MM-SS
-                                        const [h, m, s] = timePart.split('-').map(Number);
+                                        // Extraiem hora del nom de l'arxiu
+                                        // Format habitual: image-YYYY-MM-DD_HH-MM-SS.jpg
+                                        // A vegades: id_YYYY...
+                                        const parts = lastImage.replace('.jpg', '').split('_');
+                                        const timePart = parts.length > 1 ? parts[1] : null; // HH-MM-SS
                                         
-                                        const imgDate = new Date();
-                                        imgDate.setHours(h, m, s, 0);
-                                        
-                                        const diffMs = Date.now() - imgDate.getTime();
-                                        // Si la imatge té menys de 20 minuts (1200000ms), està ONLINE
-                                        if (diffMs < 1200000) {
-                                            verifiedIds.add(cam.id);
+                                        if (timePart) {
+                                            const [h, m, s] = timePart.split('-').map(Number);
+                                            
+                                            // Creem data de la imatge (assumint avui)
+                                            const imgDate = new Date();
+                                            imgDate.setHours(h, m, s, 0);
+                                            
+                                            const diffMs = Date.now() - imgDate.getTime();
+                                            const TEN_MINUTES = 10 * 60 * 1000; 
+
+                                            // Comprovem si fa menys de 10 minuts
+                                            // (Acceptem una mica de marge negatiu per diferències de rellotge servidor/client)
+                                            if (diffMs < TEN_MINUTES && diffMs > -(TEN_MINUTES)) {
+                                                verifiedIds.add(cam.id);
+                                            }
                                         }
                                     } catch (e) {
                                         // Error parsejant, ignorem
@@ -131,22 +148,13 @@ function App() {
                                 }
                             }
                         })
-                        .catch(() => { 
-                            // Fallback: Si falla tot, provem el mètode antic de snapshot per si de cas
-                             return fetch(`${SNAPSHOT_BASE_URL}${cam.id}.jpg?t=${Date.now()}`, { method: 'HEAD' })
-                                .then(res => {
-                                    if (res.ok) {
-                                        const lastMod = res.headers.get('Last-Modified');
-                                        if (lastMod && (Date.now() - new Date(lastMod).getTime()) < 900000) {
-                                            verifiedIds.add(cam.id);
-                                        }
-                                    }
-                                }).catch(() => {});
-                        });
+                        .catch(() => { /* Silent fail, offline */ });
+                    
                     promises.push(p);
                 }
             });
 
+            // Esperem que acabin totes les comprovacions de timelapses
             await Promise.all(promises);
             setActiveCameraIds(verifiedIds);
 
@@ -158,7 +166,8 @@ function App() {
     };
 
     fetchAndVerify();
-    const interval = setInterval(fetchAndVerify, 60000); // Re-check every minute
+    // Refrescar cada 10 minuts per no saturar
+    const interval = setInterval(fetchAndVerify, 600000); 
     return () => clearInterval(interval);
   }, []);
 
@@ -171,7 +180,7 @@ function App() {
   // 4. Merge Data (Only Verified Cams)
   const displayWebcams = useMemo(() => {
     return ALL_WEBCAMS
-        .filter(cam => activeCameraIds.has(cam.id) || cam.id === 'montgarri') // Force Montgarri if needed or strictly verified
+        .filter(cam => activeCameraIds.has(cam.id))
         .map(cam => ({
             ...cam,
             clients: sessionData[cam.id]?.clients || 0
@@ -180,7 +189,8 @@ function App() {
 
   // 5. Background Image Logic (Static per session)
   useEffect(() => {
-      if (themeMode !== 'image' || displayWebcams.length === 0) return;
+      // WAIT for session loading to finish to ensure we have the full list of cameras before picking one
+      if (themeMode !== 'image' || isSessionLoading || displayWebcams.length === 0) return;
 
       setBgImage(current => {
           if (current) return current;
@@ -190,7 +200,7 @@ function App() {
           }
           return '';
       });
-  }, [themeMode, displayWebcams]);
+  }, [themeMode, displayWebcams, isSessionLoading]);
 
   const saveFavorites = (newFavs: string[]) => {
     setFavorites(newFavs);
