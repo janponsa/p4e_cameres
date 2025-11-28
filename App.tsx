@@ -3,13 +3,11 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { ALL_WEBCAMS, SNAPSHOT_BASE_URL } from './constants';
 import WebcamCard from './components/WebcamCard';
 import { DetailView } from './components/DetailView';
-import { SortOption } from './types';
+import { SortOption, Webcam } from './types';
 
-// URL de l'API de sessions
+// URL de l'API de sessions (només per visualitzar número clients)
 const SESSIONS_API_URL = 'https://api.projecte4estacions.com/api/sessions';
-
-// Càmeres que SEMPRE s'han de mostrar
-const ALWAYS_SHOW_IDS = ['comadevaca'];
+const TIMELAPSE_API_BASE = 'https://cams.projecte4estacions.com/api/galeria/';
 
 type TimeOfDay = 'morning' | 'day' | 'evening' | 'night';
 type ThemeMode = 'light' | 'dark' | 'image';
@@ -31,9 +29,10 @@ function App() {
 
   // Data States
   const [sessionData, setSessionData] = useState<Record<string, { clients: number }>>({});
-  const [isDataLoaded, setIsDataLoaded] = useState(false);
-
-  // Time state only for Logo logic
+  const [activeCameraIds, setActiveCameraIds] = useState<Set<string>>(new Set());
+  const [isSessionLoading, setIsSessionLoading] = useState(true);
+  
+  // Time state
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>('day');
 
   // --- THEME LOGIC START ---
@@ -74,23 +73,92 @@ function App() {
       return () => clearInterval(interval);
   }, []);
 
-  // 2. Fetch Sessions Data
+  // 2. Fetch Sessions & Verify Inactive Cams (Smart Filter)
   useEffect(() => {
-    const fetchSessionData = async () => {
+    const fetchAndVerify = async () => {
         try {
+            // A. Get Sessions (Live viewers)
             const response = await fetch(SESSIONS_API_URL);
             if (!response.ok) throw new Error('Error network');
             const data = await response.json();
             setSessionData(data);
-            setIsDataLoaded(true);
+
+            // B. Determine Active Cams
+            const verifiedIds = new Set<string>();
+            const promises: Promise<void>[] = [];
+
+            // Get Today's date YYYY-MM-DD
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = String(now.getMonth() + 1).padStart(2, '0');
+            const day = String(now.getDate()).padStart(2, '0');
+            const todayStr = `${year}-${month}-${day}`;
+
+            ALL_WEBCAMS.forEach(cam => {
+                // 1. Si està a sessions (té espectadors), és vàlida segur
+                if (Object.prototype.hasOwnProperty.call(data, cam.id)) {
+                    verifiedIds.add(cam.id);
+                } else {
+                    // 2. Si NO està a sessions (0 espectadors), comprovem l'última imatge del Timelapse
+                    // Això és més fiable que snapshots/id.jpg
+                    const p = fetch(`${TIMELAPSE_API_BASE}${cam.id}/dates`)
+                        .then(r => r.json())
+                        .then(async (dates: string[]) => {
+                            // Si tenim dates i l'última és avui
+                            if (Array.isArray(dates) && dates.length > 0 && dates[0] === todayStr) {
+                                // Consultem imatges d'avui
+                                const imgRes = await fetch(`${TIMELAPSE_API_BASE}${cam.id}/${todayStr}/images`);
+                                const images = await imgRes.json();
+                                if (Array.isArray(images) && images.length > 0) {
+                                    // Agafem l'última imatge: image-YYYY-MM-DD_HH-MM-SS.jpg
+                                    const lastImage = images[images.length - 1];
+                                    try {
+                                        // Extraiem l'hora del nom
+                                        const timePart = lastImage.split('_')[1].split('.')[0]; // HH-MM-SS
+                                        const [h, m, s] = timePart.split('-').map(Number);
+                                        
+                                        const imgDate = new Date();
+                                        imgDate.setHours(h, m, s, 0);
+                                        
+                                        const diffMs = Date.now() - imgDate.getTime();
+                                        // Si la imatge té menys de 20 minuts (1200000ms), està ONLINE
+                                        if (diffMs < 1200000) {
+                                            verifiedIds.add(cam.id);
+                                        }
+                                    } catch (e) {
+                                        // Error parsejant, ignorem
+                                    }
+                                }
+                            }
+                        })
+                        .catch(() => { 
+                            // Fallback: Si falla tot, provem el mètode antic de snapshot per si de cas
+                             return fetch(`${SNAPSHOT_BASE_URL}${cam.id}.jpg?t=${Date.now()}`, { method: 'HEAD' })
+                                .then(res => {
+                                    if (res.ok) {
+                                        const lastMod = res.headers.get('Last-Modified');
+                                        if (lastMod && (Date.now() - new Date(lastMod).getTime()) < 900000) {
+                                            verifiedIds.add(cam.id);
+                                        }
+                                    }
+                                }).catch(() => {});
+                        });
+                    promises.push(p);
+                }
+            });
+
+            await Promise.all(promises);
+            setActiveCameraIds(verifiedIds);
+
         } catch (e) {
-            console.error("Error carregant sessions:", e);
-            setIsDataLoaded(true);
+            console.error("Error carregant dades:", e);
+        } finally {
+            setIsSessionLoading(false);
         }
     };
 
-    fetchSessionData();
-    const interval = setInterval(fetchSessionData, 60000);
+    fetchAndVerify();
+    const interval = setInterval(fetchAndVerify, 60000); // Re-check every minute
     return () => clearInterval(interval);
   }, []);
 
@@ -100,33 +168,29 @@ function App() {
     if (saved) setFavorites(JSON.parse(saved));
   }, []);
 
-  // 4. Filtering Logic
-  const activeWebcams = useMemo(() => {
-    if (!isDataLoaded) return [];
-    const available = ALL_WEBCAMS.filter(cam => {
-        const isActive = sessionData.hasOwnProperty(cam.id);
-        const isAlwaysShown = ALWAYS_SHOW_IDS.includes(cam.id);
-        return isActive || isAlwaysShown;
-    });
-    return available.map(cam => ({
-        ...cam,
-        clients: sessionData[cam.id]?.clients || 0
-    }));
-  }, [isDataLoaded, sessionData]);
+  // 4. Merge Data (Only Verified Cams)
+  const displayWebcams = useMemo(() => {
+    return ALL_WEBCAMS
+        .filter(cam => activeCameraIds.has(cam.id) || cam.id === 'montgarri') // Force Montgarri if needed or strictly verified
+        .map(cam => ({
+            ...cam,
+            clients: sessionData[cam.id]?.clients || 0
+        }));
+  }, [activeCameraIds, sessionData]);
 
-  // 5. Background Image Logic
+  // 5. Background Image Logic (Static per session)
   useEffect(() => {
-      if (themeMode !== 'image' || activeWebcams.length === 0) return;
+      if (themeMode !== 'image' || displayWebcams.length === 0) return;
 
       setBgImage(current => {
           if (current) return current;
-          const randomCam = activeWebcams[Math.floor(Math.random() * activeWebcams.length)];
+          const randomCam = displayWebcams[Math.floor(Math.random() * displayWebcams.length)];
           if (randomCam) {
               return `${SNAPSHOT_BASE_URL}${randomCam.id}.jpg?t=${Date.now()}`;
           }
           return '';
       });
-  }, [themeMode, activeWebcams]);
+  }, [themeMode, displayWebcams]);
 
   const saveFavorites = (newFavs: string[]) => {
     setFavorites(newFavs);
@@ -143,12 +207,12 @@ function App() {
   };
 
   const regions = useMemo(() => {
-    const r = new Set(activeWebcams.map(w => w.region));
+    const r = new Set(displayWebcams.map(w => w.region));
     return ['Totes', 'Preferides', ...Array.from(r).sort()];
-  }, [activeWebcams]);
+  }, [displayWebcams]);
 
   const filteredWebcams = useMemo(() => {
-    let result = activeWebcams;
+    let result = displayWebcams;
     if (filterRegion === 'Preferides') result = result.filter(w => favorites.includes(w.id));
     else if (filterRegion !== 'Totes') result = result.filter(w => w.region === filterRegion);
 
@@ -167,9 +231,9 @@ function App() {
         default: return b.altitude - a.altitude;
       }
     });
-  }, [filterRegion, searchTerm, sortBy, favorites, activeWebcams]);
+  }, [filterRegion, searchTerm, sortBy, favorites, displayWebcams]);
 
-  const selectedWebcam = useMemo(() => activeWebcams.find(w => w.id === selectedWebcamId), [selectedWebcamId, activeWebcams]);
+  const selectedWebcam = useMemo(() => displayWebcams.find(w => w.id === selectedWebcamId), [selectedWebcamId, displayWebcams]);
 
   // Common styles
   const textPrimary = isDarkMode ? 'text-white' : 'text-gray-900';
@@ -177,6 +241,12 @@ function App() {
   const bgPanel = isDarkMode ? 'bg-black/40 border-white/10' : 'bg-white/60 border-white/40 shadow-xl';
   const hoverBg = isDarkMode ? 'hover:bg-white/10' : 'hover:bg-black/5';
   const sidebarBg = isDarkMode ? 'bg-black/60 border-r border-white/10' : 'bg-white/70 border-r border-gray-200';
+
+  const handleRegionChange = (region: string) => {
+      setFilterRegion(region);
+      setSelectedWebcamId(null);
+      setIsSidebarOpen(false);
+  };
 
   return (
     <div className={`flex h-screen overflow-hidden font-sans transition-colors duration-500 relative bg-gray-900`}>
@@ -215,11 +285,7 @@ function App() {
           {regions.map(region => (
             <button
               key={region}
-              onClick={() => { 
-                  setFilterRegion(region); 
-                  setSelectedWebcamId(null); 
-                  setIsSidebarOpen(false); 
-              }}
+              onClick={() => handleRegionChange(region)}
               className={`w-full text-left rounded-lg transition-all duration-200 flex items-center group relative px-3 py-2.5 justify-between
                 ${filterRegion === region 
                   ? (isDarkMode ? 'bg-white text-black shadow-lg' : 'bg-blue-600 text-white shadow-md') 
@@ -322,7 +388,8 @@ function App() {
         </header>
 
         {/* Content Area */}
-        <div className="flex-1 overflow-y-auto px-4 lg:px-8 pb-20 lg:pb-8 custom-scrollbar scroll-smooth w-full">
+        {/* CHANGED: px-3 for mobile padding */}
+        <div className="flex-1 overflow-y-auto px-3 sm:px-4 lg:px-8 pb-20 lg:pb-8 custom-scrollbar scroll-smooth w-full">
           
           {selectedWebcam ? (
             <DetailView 
@@ -354,17 +421,15 @@ function App() {
                  </div>
               </div>
 
-              {!isDataLoaded ? (
-                  <div className="flex items-center justify-center h-64">
-                      <div className="flex flex-col items-center gap-3">
-                          <i className={`ph-bold ph-spinner animate-spin text-4xl ${isDarkMode ? 'text-white' : 'text-blue-600'}`}></i>
-                          <span className={`opacity-70 text-sm ${textPrimary}`}>Carregant càmeres...</span>
-                      </div>
+              {isSessionLoading ? (
+                  <div className="flex flex-col items-center justify-center h-64">
+                      <i className={`ph-bold ph-spinner animate-spin text-4xl mb-4 ${textSecondary}`}></i>
+                      <p className={`text-sm font-medium ${textSecondary}`}>Cercant càmeres actives...</p>
                   </div>
               ) : filteredWebcams.length === 0 ? (
                 <div className={`flex flex-col items-center justify-center h-64 rounded-2xl p-8 text-center mx-4 ${isDarkMode ? 'bg-white/5 text-white/50' : 'bg-black/5 text-black/50'}`}>
                     <i className="ph-duotone ph-binoculars text-6xl mb-4 opacity-50"></i>
-                    <p className="text-lg font-medium">No s'han trobat resultats.</p>
+                    <p className="text-lg font-medium">No s'han trobat càmeres actives.</p>
                 </div>
               ) : (
                 <div className={`
