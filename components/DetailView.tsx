@@ -109,10 +109,9 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                         
                         if (tempObj) {
                             t = parseFloat(tempObj.valor_lectura).toFixed(1);
-                            // METEOCAT UTC + 30 MIN Logic
-                            // Append 'Z' to treat string as UTC, then browser converts to local time
+                            // METEOCAT UTC + 30 MIN Logic (using Z for UTC parsing)
                             const date = new Date(tempObj.data_lectura + 'Z'); 
-                            date.setMinutes(date.getMinutes() + 30); // Add 30 mins for local interval end
+                            date.setMinutes(date.getMinutes() + 30);
                             time = `${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`;
                         }
                         if (humObj) h = Math.round(parseFloat(humObj.valor_lectura));
@@ -244,7 +243,7 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                 const data = await res.json();
                 
                 data.forEach((d: any) => {
-                    const date = new Date(d.data_lectura); // Gràfics no cal +30min estricte, però és consistent
+                    const date = new Date(d.data_lectura); 
                     labels.push(`${date.getHours()}:${String(date.getMinutes()).padStart(2,'0')}`);
                     let val = parseFloat(d.valor_lectura);
                     if (type === 'wind') val = val * 3.6; // m/s to km/h
@@ -252,17 +251,39 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                 });
 
             } else if (webcam.meteoStationType === 'wunderground') {
-                const url = `https://api.weather.com/v2/pws/history/all?stationId=${webcam.meteoStationId}&format=json&units=m&date=${new Date().toISOString().slice(0,10).replace(/-/g,'')}&numericPrecision=decimal&apiKey=${WG_API_KEY}`;
-                const res = await fetch(url);
-                const data = await res.json();
+                // FETCH YESTERDAY AND TODAY TO ENSURE FULL 24H COVERAGE
+                const getWGDateStr = (d: Date) => d.toISOString().slice(0,10).replace(/-/g,'');
+                const today = new Date();
+                const yesterday = new Date(today);
+                yesterday.setDate(yesterday.getDate() - 1);
+
+                const datesToFetch = [getWGDateStr(yesterday), getWGDateStr(today)];
+                let allObservations: any[] = [];
+
+                const promises = datesToFetch.map(dateStr => 
+                    fetch(`https://api.weather.com/v2/pws/history/all?stationId=${webcam.meteoStationId}&format=json&units=m&date=${dateStr}&numericPrecision=decimal&apiKey=${WG_API_KEY}`)
+                        .then(res => res.json())
+                        .then(data => data.observations || [])
+                        .catch(() => [])
+                );
+
+                const results = await Promise.all(promises);
+                allObservations = results.flat();
                 
-                if(data.observations) {
+                if (allObservations.length > 0) {
+                    // FILTER LAST 24 HOURS
+                    const nowMs = today.getTime();
+                    const cutoffMs = nowMs - (24 * 60 * 60 * 1000);
+                    const recentObs = allObservations.filter((o: any) => {
+                        const obsTime = new Date(o.obsTimeUtc).getTime();
+                        return obsTime >= cutoffMs && obsTime <= nowMs;
+                    });
+
                     // WUNDERGROUND BUCKETING LOGIC (30 min groups)
                     const buckets: {[key: string]: {sum: number, count: number, max: number}} = {};
                     
-                    data.observations.forEach((obs: any) => {
+                    recentObs.forEach((obs: any) => {
                         const date = new Date(obs.obsTimeUtc);
-                        // Round down to nearest 30 min
                         const minutes = date.getMinutes();
                         const roundedMinutes = minutes < 30 ? 0 : 30;
                         date.setMinutes(roundedMinutes, 0, 0);
@@ -280,16 +301,14 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                         if (val > buckets[key].max) buckets[key].max = val;
                     });
 
-                    // Flatten buckets to arrays
                     Object.keys(buckets).sort().forEach(ts => {
                         const b = buckets[ts];
                         if (b.count > 0) {
                             const date = new Date(ts);
                             labels.push(`${date.getHours()}:${String(date.getMinutes()).padStart(2,'0')}`);
                             
-                            // Use MAX for wind, AVG for others
                             if (type === 'wind') dataPoints.push(parseFloat(b.max.toFixed(1)));
-                            else dataPoints.push(parseFloat((b.sum / b.count).toFixed(1))); // LIMIT DECIMALS
+                            else dataPoints.push(parseFloat((b.sum / b.count).toFixed(1))); 
                         }
                     });
                 }
@@ -309,37 +328,71 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
             if (chartInstanceRef.current) chartInstanceRef.current.destroy();
 
             const ctx = chartCanvasRef.current.getContext('2d');
+            
+            // Create Gradient
+            const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+            gradient.addColorStop(0, chartConfig.color + (chartConfig.type === 'wind' ? 'BB' : '66')); 
+            gradient.addColorStop(1, chartConfig.color + '05'); // Fade to almost transparent
+
             chartInstanceRef.current = new window.Chart(ctx, {
-                type: chartConfig.type === 'wind' ? 'bar' : 'line', // BAR for wind
+                type: chartConfig.type === 'wind' ? 'bar' : 'line',
                 data: {
                     labels: chartConfig.data.labels,
                     datasets: [{
                         label: chartConfig.label,
                         data: chartConfig.data.dataPoints,
                         borderColor: chartConfig.color,
-                        backgroundColor: chartConfig.color + (chartConfig.type === 'wind' ? '80' : '20'), // More opaque for bars
-                        fill: chartConfig.type !== 'wind',
-                        tension: 0.4,
-                        pointRadius: chartConfig.type === 'wind' ? 0 : 0, // No points for bars
-                        borderWidth: chartConfig.type === 'wind' ? 0 : 2
+                        backgroundColor: gradient, // Use Gradient
+                        fill: true,
+                        tension: 0.4, // Smooth lines
+                        pointRadius: 0, // Clean look (no dots)
+                        pointHoverRadius: 4,
+                        borderWidth: chartConfig.type === 'wind' ? 0 : 2,
+                        borderRadius: 4, // Rounded bars
+                        barPercentage: 0.6
                     }]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
                     interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: isDarkMode ? 'rgba(30,30,30,0.9)' : 'rgba(255,255,255,0.95)',
+                            titleColor: isDarkMode ? '#fff' : '#111',
+                            bodyColor: isDarkMode ? '#ccc' : '#444',
+                            borderColor: isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)',
+                            borderWidth: 1,
+                            padding: 10,
+                            displayColors: false,
+                            bodyFont: { size: 13, weight: 'bold' },
+                            callbacks: {
+                                title: (items: any) => `Hora: ${items[0].label}`,
+                                label: (context: any) => `${context.parsed.y} ${chartConfig.type === 'temp' ? '°C' : chartConfig.type === 'hum' ? '%' : 'km/h'}`
+                            }
+                        }
+                    },
                     scales: {
                         y: { 
                             beginAtZero: chartConfig.type === 'hum' || chartConfig.type === 'wind',
-                            grid: { color: isDarkMode ? '#333' : '#eee' }
+                            grid: { 
+                                color: isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
+                                borderDash: [4, 4]
+                            },
+                            ticks: {
+                                color: isDarkMode ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)',
+                                font: { size: 10 }
+                            }
                         },
                         x: { 
-                            ticks: { maxTicksLimit: 8 },
+                            ticks: { 
+                                maxTicksLimit: 6,
+                                color: isDarkMode ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)',
+                                font: { size: 10 }
+                            },
                             grid: { display: false }
                         }
-                    },
-                    plugins: {
-                        legend: { display: false }
                     }
                 }
             });
