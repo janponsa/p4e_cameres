@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { ALL_WEBCAMS, SNAPSHOT_BASE_URL } from './constants';
 import WebcamCard from './components/WebcamCard';
@@ -407,6 +408,8 @@ function App() {
               onBack={() => setSelectedWebcamId(null)}
               timeOfDay={timeOfDay}
               isDarkMode={isDarkMode}
+              isFavorite={favorites.includes(selectedWebcam.id)}
+              onToggleFavorite={(e) => toggleFavorite(e, selectedWebcam.id)}
             />
           ) : (
             <div className="max-w-[2400px] mx-auto w-full">
@@ -453,8 +456,6 @@ function App() {
                     <WebcamCard 
                       key={webcam.id} 
                       webcam={webcam} 
-                      isFavorite={favorites.includes(webcam.id)}
-                      onToggleFavorite={(e) => toggleFavorite(e, webcam.id)}
                       onClick={() => setSelectedWebcamId(webcam.id)}
                       isDarkMode={isDarkMode}
                       mobileViewMode={mobileViewMode} // Pass view mode prop

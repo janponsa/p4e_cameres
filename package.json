@@ -11,7 +11,8 @@
   "dependencies": {
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "hls.js": "^1.6.15"
+    "hls.js": "^1.6.15",
+    "@google/genai": "^0.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
