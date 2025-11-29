@@ -1,8 +1,10 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Webcam, WeatherData } from '../types';
 import VideoPlayer from './VideoPlayer';
 import TimelapsePlayer from './TimelapsePlayer';
 import { SNAPSHOT_BASE_URL } from '../constants';
+import { GoogleGenAI, Type } from "@google/genai";
 
 // --- API KEYS ---
 const WG_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525";
@@ -18,6 +20,8 @@ interface DetailViewProps {
     onBack: () => void;
     timeOfDay: 'morning' | 'day' | 'evening' | 'night';
     isDarkMode: boolean;
+    isFavorite: boolean;
+    onToggleFavorite: (e: React.MouseEvent) => void;
 }
 
 // Helpers conversió
@@ -49,10 +53,24 @@ const getWeatherIcon = (code: number, isDay: boolean) => {
     return { icon: 'ph-cloud', color: 'text-gray-400' };
 };
 
-export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDay, isDarkMode }) => {
+// Type definition for AI Response
+interface NexusAnalysis {
+    visual_summary: string;
+    arome_forecast: string;
+    nexus_verdict: string;
+    sensation: string;
+    status_color: string; // "green", "yellow", "red"
+}
+
+export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDay, isDarkMode, isFavorite, onToggleFavorite }) => {
     const [activeTab, setActiveTab] = useState<'live' | 'timelapse'>('live');
     const [weather, setWeather] = useState<WeatherData | null>(null);
     const [isWeatherLoading, setIsWeatherLoading] = useState(false);
+    
+    // AI Vision State - Now stores object or null
+    const [aiAnalysis, setAiAnalysis] = useState<NexusAnalysis | null>(null);
+    const [aiError, setAiError] = useState<string | null>(null);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
     
     // Chart State
     const [showChartModal, setShowChartModal] = useState(false);
@@ -61,6 +79,148 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
     const chartCanvasRef = useRef<HTMLCanvasElement>(null);
 
     const snapshotUrl = `${SNAPSHOT_BASE_URL}${webcam.id}-mini.jpg?r=${Math.floor(Date.now() / 60000)}`;
+
+    // --- AI VISION LOGIC ---
+    const handleAIAnalysis = async () => {
+        setIsAnalyzing(true);
+        setAiAnalysis(null);
+        setAiError(null);
+
+        try {
+            // 1. PREPARE LIVE TELEMETRY (Sensors Now)
+            const telemetryData = weather 
+                ? `LECTURA SENSORS ACTUALS:
+                   - Temp: ${weather.temp}°C
+                   - Vent: ${weather.wind} km/h
+                   - Humitat: ${weather.humidity}%
+                   - Precipitació acumulada: ${weather.rain}mm
+                   - Condició: ${weather.conditionText || 'N/D'}`
+                : "Sensors no disponibles.";
+
+            // 2. FETCH AROME FORECAST
+            let aromeForecastText = "AROME no disponible.";
+            try {
+                if (webcam.lat && webcam.lng) {
+                    const aromeUrl = `https://api.open-meteo.com/v1/forecast?latitude=${webcam.lat}&longitude=${webcam.lng}&hourly=temperature_2m,precipitation,weather_code,wind_speed_10m,cloud_cover&models=arome_france&timezone=auto&forecast_days=1`;
+                    const res = await fetch(aromeUrl);
+                    const data = await res.json();
+                    
+                    if (data && data.hourly) {
+                        const currentHour = new Date().getHours();
+                        const relevantIndices = [];
+                        for (let i = 0; i < data.hourly.time.length; i++) {
+                            const t = new Date(data.hourly.time[i]);
+                            const h = t.getHours();
+                            if (h >= currentHour && relevantIndices.length < 3) {
+                                relevantIndices.push(i);
+                            }
+                        }
+                        const forecastPoints = relevantIndices.map(idx => {
+                            const time = data.hourly.time[idx].split('T')[1];
+                            const temp = data.hourly.temperature_2m[idx];
+                            const precip = data.hourly.precipitation[idx];
+                            const wind = data.hourly.wind_speed_10m[idx];
+                            const cloud = data.hourly.cloud_cover[idx];
+                            return `[${time}] ${temp}°C, ${wind}km/h, ${cloud}% núvols, ${precip}mm pluja`;
+                        });
+                        aromeForecastText = `MODEL AROME (1.3km) PROPERES 3H:\n${forecastPoints.join('\n')}`;
+                    }
+                }
+            } catch (e) {
+                console.warn("AROME Fetch failed", e);
+            }
+
+            // 3. FETCH IMAGE
+            let base64String: string | null = null;
+            try {
+                const response = await fetch(snapshotUrl, { mode: 'cors' });
+                if (!response.ok) throw new Error("Image fetch failed");
+                const blob = await response.blob();
+                const base64Data = await new Promise<string>((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result as string);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+                base64String = base64Data.split(',')[1];
+            } catch (imgError) {
+                console.warn("Visual signal lost", imgError);
+            }
+            
+            // 4. INITIALIZE GEMINI
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            
+            // Define Structured Schema
+            const schema = {
+                type: Type.OBJECT,
+                properties: {
+                    visual_summary: { 
+                        type: Type.STRING, 
+                        description: "Què es veu a la imatge? Màx 5-6 paraules. Ex: 'Cel serè amb neu pols', 'Boira densa i tancada'. Si no hi ha imatge, digues 'Sense senyal visual'." 
+                    },
+                    arome_forecast: { 
+                        type: Type.STRING, 
+                        description: "Resum molt breu de la tendència AROME. Màx 1 frase. Ex: 'Precipitacions previstes en 1h', 'Estabilitat garantida'." 
+                    },
+                    nexus_verdict: { 
+                        type: Type.STRING, 
+                        description: "Conclusió final directa per l'usuari. Màx 1 frase curta." 
+                    },
+                    sensation: {
+                        type: Type.STRING,
+                        description: "Sensació tèrmica o ambient en 2 paraules. Ex: 'Fred Intens', 'Ambient Suau', 'Vent Gèlid'."
+                    },
+                    status_color: {
+                        type: Type.STRING,
+                        description: "Estat general: 'green' (Bo), 'yellow' (Precaució), 'red' (Mal temps/Perill)."
+                    }
+                },
+                required: ["visual_summary", "arome_forecast", "nexus_verdict", "sensation", "status_color"]
+            };
+
+            let prompt = "";
+            let parts = [];
+            const sysInstr = "Ets Nexus AI, un assistent meteorològic d'alta muntanya. Sigues extremadament concís i futurista.";
+
+            if (base64String) {
+                prompt = `ANALITZA:
+                1. IMATGE: ${webcam.name} (${webcam.altitude}m).
+                2. TELEMETRIA: ${telemetryData}
+                3. MODEL AROME: ${aromeForecastText}
+                
+                Genera JSON.`;
+                parts = [
+                    { inlineData: { mimeType: 'image/jpeg', data: base64String } },
+                    { text: prompt }
+                ];
+            } else {
+                prompt = `ANALITZA (SENSE VÍDEO):
+                1. TELEMETRIA: ${telemetryData}
+                2. MODEL AROME: ${aromeForecastText}
+                
+                Genera JSON.`;
+                parts = [{ text: prompt }];
+            }
+
+            const result = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: { parts },
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: schema,
+                    systemInstruction: sysInstr
+                }
+            });
+            
+            setAiAnalysis(JSON.parse(result.text));
+
+        } catch (error) {
+            console.error("AI Analysis failed:", error);
+            setAiError("Error de connexió neuronal.");
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
 
     // --- FETCH WEATHER DATA LOGIC ---
     useEffect(() => {
@@ -419,6 +579,14 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
 
     const weatherIcon = (weather?.code !== undefined && weather?.isDay !== undefined) ? getWeatherIcon(weather.code, weather.isDay) : null;
 
+    // Helper for AI Status Color
+    const getStatusColorClass = (colorStr: string) => {
+        if (colorStr === 'green') return isDarkMode ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-100 text-emerald-800 border-emerald-200';
+        if (colorStr === 'yellow') return isDarkMode ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-100 text-amber-800 border-amber-200';
+        if (colorStr === 'red') return isDarkMode ? 'bg-rose-500/20 text-rose-300 border-rose-500/30' : 'bg-rose-100 text-rose-800 border-rose-200';
+        return isDarkMode ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30' : 'bg-indigo-100 text-indigo-800 border-indigo-200';
+    };
+
     return (
         <div className="animate-fade-in w-full flex flex-col items-start pb-10">
             {/* Header */}
@@ -431,6 +599,23 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                         </button>
                     </div>
                     <div className="flex items-center gap-3">
+                        <button 
+                            onClick={handleAIAnalysis}
+                            disabled={isAnalyzing}
+                            className={`flex items-center gap-2 px-3 py-1.5 rounded-full transition-all border ${isAnalyzing ? 'bg-blue-500/20 border-blue-500/50 text-blue-300' : 'bg-gradient-to-r from-indigo-500/20 to-purple-500/20 hover:from-indigo-500/30 hover:to-purple-500/30 border-indigo-500/30 text-indigo-300'}`}
+                            title="Analitzar imatge amb Nexus AI Vision"
+                        >
+                            <i className={`ph-fill ph-sparkle text-lg ${isAnalyzing ? 'animate-spin' : ''}`}></i>
+                            <span className="text-xs font-bold uppercase tracking-wider hidden sm:inline">Nexus AI</span>
+                        </button>
+
+                         <button 
+                            onClick={onToggleFavorite}
+                            className={`p-2 rounded-full transition-colors ${btnShareClass} ${isFavorite ? 'text-yellow-400' : ''}`}
+                            title={isFavorite ? "Treure de preferits" : "Afegir a preferits"}
+                        >
+                            <i className={`ph-fill ${isFavorite ? 'ph-star text-yellow-400' : 'ph-star'} text-lg`}></i>
+                        </button>
                          <button className={`p-2 rounded-full transition-colors ${btnShareClass}`}><i className="ph-bold ph-share-network text-lg"></i></button>
                         <div className={`p-1 rounded-lg inline-flex backdrop-blur-md shadow-sm ${segmentContainerClass}`}>
                             <button onClick={() => setActiveTab('live')} className={`px-3 py-1 rounded-md text-xs font-medium transition-all duration-300 ${activeTab === 'live' ? segmentActive : segmentInactive}`}>Directe</button>
@@ -449,7 +634,7 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
             </div>
 
             <div className="flex flex-col lg:flex-row gap-6 w-full items-start">
-                <div className="flex-1 w-full min-w-0">
+                <div className="flex-1 w-full min-w-0 flex flex-col gap-4">
                      <div className="w-full aspect-video rounded-xl sm:rounded-2xl overflow-hidden shadow-2xl relative group bg-black ring-1 ring-white/10">
                         {activeTab === 'live' ? (
                             <VideoPlayer streamUrl={webcam.streamUrl} poster={snapshotUrl} timeOfDay={timeOfDay} webcamId={webcam.id} />
@@ -457,6 +642,92 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                             <TimelapsePlayer webcamId={webcam.id} />
                         )}
                     </div>
+                    
+                    {/* NEXUS AI ANALYSIS PANEL - REFACTORED */}
+                    {(isAnalyzing || aiAnalysis || aiError) && (
+                        <div className={`w-full rounded-xl overflow-hidden relative transition-all duration-500 animate-fade-in border shadow-lg ${
+                            isDarkMode 
+                                ? 'bg-slate-950/90 border-slate-700/50' 
+                                : 'bg-white border-indigo-100 shadow-indigo-100/50'
+                        }`}>
+                            {/* Header Stripe */}
+                            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500"></div>
+
+                            <div className="p-5 relative z-10">
+                                <div className="flex items-center justify-between mb-4">
+                                    <div className="flex items-center gap-2">
+                                        <i className={`ph-fill ph-cpu text-lg ${isDarkMode ? 'text-indigo-400' : 'text-indigo-600'}`}></i>
+                                        <h3 className={`text-xs font-bold uppercase tracking-[0.2em] ${isDarkMode ? 'text-indigo-300' : 'text-indigo-800'}`}>
+                                            Nexus Vision
+                                        </h3>
+                                    </div>
+                                    {isAnalyzing && (
+                                        <span className="flex items-center gap-2 text-[10px] font-mono text-indigo-400 animate-pulse">
+                                            PROCESSANT DADES...
+                                        </span>
+                                    )}
+                                </div>
+
+                                {isAnalyzing ? (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 animate-pulse">
+                                        <div className="h-20 bg-indigo-500/5 rounded-lg border border-indigo-500/10"></div>
+                                        <div className="h-20 bg-indigo-500/5 rounded-lg border border-indigo-500/10"></div>
+                                        <div className="h-10 bg-indigo-500/5 rounded-lg col-span-1 sm:col-span-2"></div>
+                                    </div>
+                                ) : aiError ? (
+                                     <div className="text-red-400 text-sm p-2 border border-red-500/20 rounded bg-red-500/5 flex items-center gap-2">
+                                        <i className="ph-bold ph-warning"></i> {aiError}
+                                     </div>
+                                ) : aiAnalysis ? (
+                                    <div className="flex flex-col gap-4">
+                                        {/* Main Grid */}
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                            {/* Visual */}
+                                            <div className={`p-3 rounded-lg border ${isDarkMode ? 'bg-white/5 border-white/5' : 'bg-gray-50 border-gray-100'}`}>
+                                                <div className="flex items-center gap-2 mb-2">
+                                                    <i className="ph-fill ph-eye text-sky-400"></i>
+                                                    <span className={`text-[10px] uppercase font-bold tracking-wider ${textMuted}`}>Visual</span>
+                                                </div>
+                                                <p className={`text-sm font-medium leading-snug ${textPrimary}`}>
+                                                    {aiAnalysis.visual_summary}
+                                                </p>
+                                            </div>
+
+                                            {/* AROME Forecast */}
+                                            <div className={`p-3 rounded-lg border ${isDarkMode ? 'bg-white/5 border-white/5' : 'bg-gray-50 border-gray-100'}`}>
+                                                <div className="flex items-center gap-2 mb-2">
+                                                    <i className="ph-fill ph-chart-line-up text-purple-400"></i>
+                                                    <span className={`text-[10px] uppercase font-bold tracking-wider ${textMuted}`}>Model AROME</span>
+                                                </div>
+                                                <p className={`text-sm font-medium leading-snug ${textPrimary}`}>
+                                                    {aiAnalysis.arome_forecast}
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        {/* Verdict & Sensation Bar */}
+                                        <div className={`flex flex-col sm:flex-row gap-3 p-3 rounded-lg border items-start sm:items-center justify-between ${getStatusColorClass(aiAnalysis.status_color)}`}>
+                                            <div className="flex flex-col">
+                                                 <span className="text-[10px] font-bold uppercase opacity-70 mb-0.5">CONCLUSIÓ NEXUS</span>
+                                                 <p className="text-sm font-bold leading-tight">{aiAnalysis.nexus_verdict}</p>
+                                            </div>
+                                            <div className={`px-2 py-1 rounded text-[10px] font-bold uppercase border bg-white/20 border-white/20 shrink-0 mt-2 sm:mt-0`}>
+                                                {aiAnalysis.sensation}
+                                            </div>
+                                        </div>
+                                        
+                                        {/* Footer Disclaimer */}
+                                        <div className="flex items-center gap-1.5 opacity-50 mt-1">
+                                            <i className={`ph-bold ph-info text-[10px] ${textSecondary}`}></i>
+                                            <p className={`text-[9px] ${textSecondary}`}>
+                                                IA Experimental. No és un butlletí oficial.
+                                            </p>
+                                        </div>
+                                    </div>
+                                ) : null}
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 <div className="w-full lg:w-80 flex flex-col gap-4 shrink-0">

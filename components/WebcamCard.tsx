@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Webcam } from '../types';
 import { SNAPSHOT_BASE_URL } from '../constants';
@@ -8,8 +7,6 @@ const WG_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525";
 
 interface WebcamCardProps {
     webcam: Webcam;
-    isFavorite: boolean;
-    onToggleFavorite: (e: React.MouseEvent) => void;
     onClick: () => void;
     isDarkMode: boolean;
     mobileViewMode: 'list' | 'grid';
@@ -68,7 +65,7 @@ const getWeatherIcon = (code: number, isDay: boolean) => {
 const fToC = (f: number) => (f - 32) * 5/9;
 const mphToKmh = (m: number) => m * 1.60934;
 
-const WebcamCard: React.FC<WebcamCardProps> = ({ webcam, isFavorite, onToggleFavorite, onClick, isDarkMode, mobileViewMode }) => {
+const WebcamCard: React.FC<WebcamCardProps> = ({ webcam, onClick, isDarkMode, mobileViewMode }) => {
     const snapshotUrl = `${SNAPSHOT_BASE_URL}${webcam.id}-mini.jpg?r=${Math.floor(Date.now() / 60000)}`; 
     
     // Hybrid Weather State
@@ -161,8 +158,7 @@ const WebcamCard: React.FC<WebcamCardProps> = ({ webcam, isFavorite, onToggleFav
 
     const isMobileGrid = mobileViewMode === 'grid';
     
-    // CHANGE: Adjusted Grid aspect ratio to [4/3] (more horizontal/square)
-    // CHANGE: Adjusted List height to h-20 (more compact)
+    // exact layout provided by user
     const layoutClasses = isMobileGrid 
         ? "flex-col aspect-[4/3] sm:aspect-auto sm:h-56" 
         : "flex-row h-20 sm:flex-col sm:h-56"; 
@@ -196,13 +192,6 @@ const WebcamCard: React.FC<WebcamCardProps> = ({ webcam, isFavorite, onToggleFav
                         Live
                     </span>
                 </div>
-
-                <button 
-                    onClick={onToggleFavorite}
-                    className="absolute top-1 right-1 sm:top-2 sm:right-2 z-20 p-1 sm:p-1.5 rounded-full bg-black/40 hover:bg-black/60 backdrop-blur-md text-white/70 hover:text-yellow-400 transition-colors"
-                >
-                    <i className={`ph-fill ${isFavorite ? 'ph-star text-yellow-400' : 'ph-star'} text-xs sm:text-base`}></i>
-                </button>
 
                  <div className="hidden sm:flex absolute inset-0 z-[5] items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none">
                     <div className="bg-white/20 backdrop-blur-md p-3 rounded-full border border-white/30">
