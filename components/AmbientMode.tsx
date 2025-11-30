@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Hls from 'hls.js';
 import { Webcam, WeatherData } from '../types';
 import { Soundscape } from '../utils/Soundscape';
@@ -30,10 +30,8 @@ const AmbientHlsPlayer = React.memo(({
     const loadTimeoutRef = useRef<number | null>(null);
 
     useEffect(() => {
-        // RESET
         if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
 
-        // CLEANUP: If we shouldn't load, destroy everything
         if (!shouldLoad) {
             if (hlsRef.current) {
                 hlsRef.current.destroy();
@@ -49,7 +47,7 @@ const AmbientHlsPlayer = React.memo(({
         const video = videoRef.current;
         if (!video) return;
 
-        // FAIL-SAFE: If video doesn't play in 7 seconds, trigger error to skip
+        // FAIL-SAFE: If video doesn't play in 7 seconds, skip
         loadTimeoutRef.current = window.setTimeout(() => {
             if (video.paused && onError) {
                 console.warn("Stream timeout, skipping:", streamUrl);
@@ -113,7 +111,7 @@ const AmbientHlsPlayer = React.memo(({
         <div className={`absolute inset-0 w-full h-full bg-black transition-opacity duration-1000 ${isActive ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}>
             <video 
                 ref={videoRef}
-                className="w-full h-full object-contain bg-black"
+                className="w-full h-full object-cover bg-black"
                 muted
                 playsInline
             />
@@ -139,20 +137,19 @@ const getWeatherIcon = (code: number, isDay: boolean) => {
     return { icon: 'ph-cloud', color: 'text-gray-400' };
 };
 
-// CACHE TYPE
 type WeatherCacheEntry = {
     data: WeatherData;
     timestamp: number;
 };
 
 const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
+    // Playlist Management: Keep track of upcoming items
     const [playlist, setPlaylist] = useState<Webcam[]>([]);
+    const [currentIndex, setCurrentIndex] = useState(0); // Tracks current position in playlist
     
     // Slot Logic
     const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A');
-    const [indexA, setIndexA] = useState(0);
-    const [indexB, setIndexB] = useState(1);
-
+    
     // Data State
     const [weather, setWeather] = useState<WeatherData | null>(null);
     const [progress, setProgress] = useState(0);
@@ -164,6 +161,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     // REFS
     const weatherCache = useRef<Record<string, WeatherCacheEntry>>({});
     const lastAudioUpdate = useRef<number>(0);
+    const webcamListRef = useRef<Webcam[]>(webcams);
     
     // CONSTANTS
     const DURATION = 20000; 
@@ -171,15 +169,31 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const CACHE_TTL = 10 * 60 * 1000; 
     const AUDIO_UPDATE_INTERVAL = 3 * 60 * 1000;
 
-    // 0. INIT & SHUFFLE
+    // Helper to get a random webcam ensuring no immediate repetition
+    const getRandomWebcam = useCallback((lastId?: string): Webcam => {
+        const pool = webcamListRef.current;
+        if (pool.length === 0) return {} as Webcam;
+        if (pool.length === 1) return pool[0];
+
+        let candidate;
+        do {
+            candidate = pool[Math.floor(Math.random() * pool.length)];
+        } while (candidate.id === lastId);
+        
+        return candidate;
+    }, []);
+
+    // 0. INIT PLAYLIST
     useEffect(() => {
         if (webcams.length > 0) {
-            const shuffled = [...webcams];
-            for (let i = shuffled.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-            }
-            setPlaylist(shuffled);
+            webcamListRef.current = webcams;
+            
+            // Generate initial sequence (A -> B -> C...)
+            const first = getRandomWebcam();
+            const second = getRandomWebcam(first.id);
+            const third = getRandomWebcam(second.id);
+            
+            setPlaylist([first, second, third]);
             
             // Initial Soundscape
             if (Date.now() - lastAudioUpdate.current > AUDIO_UPDATE_INTERVAL) {
@@ -187,36 +201,52 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                     temp: "15", humidity: 50, wind: 10, rain: 0, 
                     isReal: false, isDay: true, code: 1
                 };
-                Soundscape.updateContext(initialWeather, "Ambient TV Mode. Paisatges relaxants.");
+                Soundscape.updateContext(initialWeather, "Ambient TV Mode.");
                 lastAudioUpdate.current = Date.now();
             }
         }
-    }, [webcams]);
+    }, [webcams, getRandomWebcam]);
 
-    const activeWebcam = playlist.length > 0 
-        ? (activeSlot === 'A' ? playlist[indexA] : playlist[indexB])
-        : null;
+    // Extend Playlist when needed
+    useEffect(() => {
+        // If we are getting close to the end, add more items
+        if (playlist.length > 0 && currentIndex >= playlist.length - 2) {
+            const lastCam = playlist[playlist.length - 1];
+            const nextCam = getRandomWebcam(lastCam.id);
+            setPlaylist(prev => [...prev, nextCam]);
+        }
+    }, [currentIndex, playlist, getRandomWebcam]);
 
-    // Helper to advance to next camera
+    // Derived State for A/B Slots
+    // Slot A displays even indices, Slot B displays odd indices (conceptually)
+    // Actually, we just need to know WHICH webcam goes to WHICH slot
+    // Let's simplify: activeSlot determines which index is VISIBLE.
+    // The OTHER slot should be loading index + 1.
+    
+    const activeWebcam = playlist[currentIndex];
+    const nextWebcam = playlist[currentIndex + 1];
+
+    // Helper to advance
     const advanceCamera = () => {
-        setActiveSlot(prev => {
-            const nextSlot = prev === 'A' ? 'B' : 'A';
-            setTimeout(() => {
-                // Update hidden slot
-                if (nextSlot === 'A') setIndexB(prevIndex => (prevIndex + 1) % playlist.length);
-                else setIndexA(prevIndex => (prevIndex + 1) % playlist.length);
-            }, 500); 
-            return nextSlot;
-        });
+        setActiveSlot(prev => prev === 'A' ? 'B' : 'A');
+        // Delay the index update slightly to allow crossfade start? 
+        // No, we need index update to trigger logic, but visual swap happens via activeSlot opacity
+        // Wait... if we update index, both slots might change content.
+        // We need stable content for crossfade.
+        
+        // Correct Logic:
+        // Slot A holds: playlist[even]
+        // Slot B holds: playlist[odd]
+        // If index is 0 (even), A is active (showing 0). B is preparing 1.
+        // Advance -> index 1 (odd). B becomes active (showing 1). A prepares 2.
+        
+        setCurrentIndex(prev => prev + 1);
     };
 
-    // Callback when stream fails or times out
     const handleStreamError = () => {
-        // Immediate skip
         advanceCamera();
     };
 
-    // Callback when stream is ready (used for initial loading)
     const handleStreamReady = () => {
         if (!isInitialized) {
             setIsInitialized(true);
@@ -225,7 +255,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
 
     // 1. ROTATION TIMER
     useEffect(() => {
-        if (playlist.length === 0 || !isInitialized) return;
+        if (!isInitialized) return;
 
         const startTime = Date.now();
         let switchScheduled = false;
@@ -243,7 +273,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
         }, 100);
 
         return () => clearInterval(timer);
-    }, [indexA, indexB, playlist, isInitialized]); // Reset on index change
+    }, [currentIndex, isInitialized]); // Restart timer on index change
 
     // 3. WEATHER FETCHING
     useEffect(() => {
@@ -346,11 +376,27 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
         fetchData();
     }, [activeWebcam]);
 
-    if (playlist.length === 0 || !activeWebcam) return <div className="bg-black fixed inset-0"></div>;
+    if (!activeWebcam) return <div className="bg-black fixed inset-0"></div>;
 
     const weatherIcon = (weather?.code !== undefined && weather?.isDay !== undefined) 
         ? getWeatherIcon(weather.code, weather.isDay) 
         : null;
+
+    // Slot Content Logic:
+    // If currentIndex is Even -> A holds Current, B holds Next
+    // If currentIndex is Odd -> B holds Current, A holds Next
+    
+    const isEvenIndex = currentIndex % 2 === 0;
+    
+    // Slot A Stream:
+    // If even index (0, 2), A shows current (0, 2).
+    // If odd index (1, 3), A shows next (2, 4).
+    const slotAStream = isEvenIndex ? playlist[currentIndex]?.streamUrl : playlist[currentIndex + 1]?.streamUrl;
+    
+    // Slot B Stream:
+    // If even index (0, 2), B shows next (1, 3).
+    // If odd index (1, 3), B shows current (1, 3).
+    const slotBStream = isEvenIndex ? playlist[currentIndex + 1]?.streamUrl : playlist[currentIndex]?.streamUrl;
 
     return (
         <div 
@@ -369,20 +415,20 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
 
             {/* Slot A */}
             <AmbientHlsPlayer 
-                streamUrl={playlist[indexA].streamUrl} 
-                isActive={activeSlot === 'A'} 
-                shouldLoad={activeSlot === 'A' || (activeSlot === 'B' && progress > PRELOAD_PCT)} 
-                onReady={activeSlot === 'A' ? handleStreamReady : undefined}
-                onError={activeSlot === 'A' ? handleStreamError : undefined}
+                streamUrl={slotAStream} 
+                isActive={isEvenIndex} // Active if Even
+                shouldLoad={isEvenIndex || (!isEvenIndex && progress > PRELOAD_PCT)} 
+                onReady={isEvenIndex ? handleStreamReady : undefined}
+                onError={isEvenIndex ? handleStreamError : undefined}
             />
             
             {/* Slot B */}
             <AmbientHlsPlayer 
-                streamUrl={playlist[indexB].streamUrl} 
-                isActive={activeSlot === 'B'} 
-                shouldLoad={activeSlot === 'B' || (activeSlot === 'A' && progress > PRELOAD_PCT)} 
-                onReady={activeSlot === 'B' ? handleStreamReady : undefined}
-                onError={activeSlot === 'B' ? handleStreamError : undefined}
+                streamUrl={slotBStream} 
+                isActive={!isEvenIndex} // Active if Odd
+                shouldLoad={!isEvenIndex || (isEvenIndex && progress > PRELOAD_PCT)} 
+                onReady={!isEvenIndex ? handleStreamReady : undefined}
+                onError={!isEvenIndex ? handleStreamError : undefined}
             />
 
             {/* Noise Overlay */}
