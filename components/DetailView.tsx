@@ -5,6 +5,7 @@ import VideoPlayer from './VideoPlayer';
 import TimelapsePlayer from './TimelapsePlayer';
 import { SNAPSHOT_BASE_URL } from '../constants';
 import { GoogleGenAI, Type } from "@google/genai";
+import { Soundscape } from '../utils/Soundscape';
 
 // --- API KEYS ---
 const WG_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525";
@@ -80,6 +81,14 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
 
     const snapshotUrl = `${SNAPSHOT_BASE_URL}${webcam.id}-mini.jpg?r=${Math.floor(Date.now() / 60000)}`;
 
+    // SOUNDSCAPE SYNC: Weather + AI Context
+    useEffect(() => {
+        if (weather) {
+            const visualDescription = aiAnalysis ? aiAnalysis.visual_summary : "";
+            Soundscape.updateContext(weather, visualDescription);
+        }
+    }, [weather, aiAnalysis]);
+
     // --- AI VISION LOGIC ---
     const handleAIAnalysis = async () => {
         setIsAnalyzing(true);
@@ -150,29 +159,28 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
             // 4. INITIALIZE GEMINI
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             
-            // Define Structured Schema
             const schema = {
                 type: Type.OBJECT,
                 properties: {
                     visual_summary: { 
                         type: Type.STRING, 
-                        description: "Què es veu a la imatge? Màx 5-6 paraules. Ex: 'Cel serè amb neu pols', 'Boira densa i tancada'. Si no hi ha imatge, digues 'Sense senyal visual'." 
+                        description: "Descripció poètica visual de l'escena en 6-8 paraules. Centra't en l'atmosfera (ex: 'nit estrellada', 'boira densa al bosc', 'cim nevat brillant') per guiar la música." 
                     },
                     arome_forecast: { 
                         type: Type.STRING, 
-                        description: "Resum molt breu de la tendència AROME. Màx 1 frase. Ex: 'Precipitacions previstes en 1h', 'Estabilitat garantida'." 
+                        description: "Resum molt breu de la tendència AROME. Màx 1 frase." 
                     },
                     nexus_verdict: { 
                         type: Type.STRING, 
-                        description: "Conclusió final directa per l'usuari. Màx 1 frase curta." 
+                        description: "Conclusió final directa. Màx 1 frase curta." 
                     },
                     sensation: {
                         type: Type.STRING,
-                        description: "Sensació tèrmica o ambient en 2 paraules. Ex: 'Fred Intens', 'Ambient Suau', 'Vent Gèlid'."
+                        description: "Sensació tèrmica o ambient en 2 paraules."
                     },
                     status_color: {
                         type: Type.STRING,
-                        description: "Estat general: 'green' (Bo), 'yellow' (Precaució), 'red' (Mal temps/Perill)."
+                        description: "Estat general: 'green', 'yellow', 'red'."
                     }
                 },
                 required: ["visual_summary", "arome_forecast", "nexus_verdict", "sensation", "status_color"]
@@ -180,7 +188,7 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
 
             let prompt = "";
             let parts = [];
-            const sysInstr = "Ets Nexus AI, un assistent meteorològic d'alta muntanya. Sigues extremadament concís i futurista.";
+            const sysInstr = "Ets Nexus AI. Analitza la imatge per controlar un sistema de so generatiu. Descriu l'atmosfera visual amb precisió poètica.";
 
             if (base64String) {
                 prompt = `ANALITZA:
@@ -402,7 +410,6 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                 const data = await res.json();
                 
                 data.forEach((d: any) => {
-                    // FIX: METEOCAT UTC + 30 MINUTS LOGIC (Same as Current Data)
                     const date = new Date(d.data_lectura + 'Z'); 
                     date.setMinutes(date.getMinutes() + 30);
 
@@ -419,9 +426,7 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                 const yesterday = new Date(today);
                 yesterday.setDate(yesterday.getDate() - 1);
 
-                // URL 1: History Yesterday
                 const urlYesterday = `https://api.weather.com/v2/pws/history/all?stationId=${webcam.meteoStationId}&format=json&units=m&date=${getWGDateStr(yesterday)}&numericPrecision=decimal&apiKey=${WG_API_KEY}`;
-                // URL 2: Observations Today (observations/all/1day)
                 const urlToday = `https://api.weather.com/v2/pws/observations/all/1day?apiKey=${WG_API_KEY}&stationId=${webcam.meteoStationId}&numericPrecision=decimal&format=json&units=m`;
 
                 const [resYesterday, resToday] = await Promise.all([
@@ -434,7 +439,6 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                 const allObservations = [...obsYesterday, ...obsToday];
                 
                 if (allObservations.length > 0) {
-                    // FILTER LAST 24 HOURS
                     const nowMs = today.getTime();
                     const cutoffMs = nowMs - (24 * 60 * 60 * 1000);
                     const recentObs = allObservations.filter((o: any) => {
@@ -442,7 +446,6 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                         return obsTime >= cutoffMs && obsTime <= nowMs;
                     });
 
-                    // WUNDERGROUND BUCKETING LOGIC (30 min groups)
                     const buckets: {[key: string]: {sum: number, count: number, max: number}} = {};
                     
                     recentObs.forEach((obs: any) => {
@@ -491,11 +494,9 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
             if (chartInstanceRef.current) chartInstanceRef.current.destroy();
 
             const ctx = chartCanvasRef.current.getContext('2d');
-            
-            // Create Gradient
             const gradient = ctx.createLinearGradient(0, 0, 0, 300);
             gradient.addColorStop(0, chartConfig.color + (chartConfig.type === 'wind' ? 'BB' : '66')); 
-            gradient.addColorStop(1, chartConfig.color + '05'); // Fade to almost transparent
+            gradient.addColorStop(1, chartConfig.color + '05'); 
 
             chartInstanceRef.current = new window.Chart(ctx, {
                 type: chartConfig.type === 'wind' ? 'bar' : 'line',
@@ -505,13 +506,13 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                         label: chartConfig.label,
                         data: chartConfig.data.dataPoints,
                         borderColor: chartConfig.color,
-                        backgroundColor: gradient, // Use Gradient
+                        backgroundColor: gradient,
                         fill: true,
-                        tension: 0.4, // Smooth lines
-                        pointRadius: 0, // Clean look (no dots)
+                        tension: 0.4,
+                        pointRadius: 0,
                         pointHoverRadius: 4,
                         borderWidth: chartConfig.type === 'wind' ? 0 : 2,
-                        borderRadius: 4, // Rounded bars
+                        borderRadius: 4,
                         barPercentage: 0.6
                     }]
                 },
@@ -579,7 +580,6 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
 
     const weatherIcon = (weather?.code !== undefined && weather?.isDay !== undefined) ? getWeatherIcon(weather.code, weather.isDay) : null;
 
-    // Helper for AI Status Color
     const getStatusColorClass = (colorStr: string) => {
         if (colorStr === 'green') return isDarkMode ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-emerald-100 text-emerald-800 border-emerald-200';
         if (colorStr === 'yellow') return isDarkMode ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' : 'bg-amber-100 text-amber-800 border-amber-200';
@@ -598,7 +598,9 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                             <span className="font-medium text-xs">Tornar</span>
                         </button>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 relative">
+                        {/* MIXER BUTTON REMOVED (Moved to App.tsx) */}
+
                         <button 
                             onClick={handleAIAnalysis}
                             disabled={isAnalyzing}
@@ -616,7 +618,7 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                         >
                             <i className={`ph-fill ${isFavorite ? 'ph-star text-yellow-400' : 'ph-star'} text-lg`}></i>
                         </button>
-                         <button className={`p-2 rounded-full transition-colors ${btnShareClass}`}><i className="ph-bold ph-share-network text-lg"></i></button>
+                        
                         <div className={`p-1 rounded-lg inline-flex backdrop-blur-md shadow-sm ${segmentContainerClass}`}>
                             <button onClick={() => setActiveTab('live')} className={`px-3 py-1 rounded-md text-xs font-medium transition-all duration-300 ${activeTab === 'live' ? segmentActive : segmentInactive}`}>Directe</button>
                             <button onClick={() => setActiveTab('timelapse')} className={`px-3 py-1 rounded-md text-xs font-medium transition-all duration-300 ${activeTab === 'timelapse' ? segmentActive : segmentInactive}`}>Timelapse</button>
@@ -643,7 +645,7 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
                         )}
                     </div>
                     
-                    {/* NEXUS AI ANALYSIS PANEL - REFACTORED */}
+                    {/* NEXUS AI ANALYSIS PANEL */}
                     {(isAnalyzing || aiAnalysis || aiError) && (
                         <div className={`w-full rounded-xl overflow-hidden relative transition-all duration-500 animate-fade-in border shadow-lg ${
                             isDarkMode 
