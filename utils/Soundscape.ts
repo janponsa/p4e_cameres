@@ -51,8 +51,8 @@ async function decodeAudioData(
 const LYRIA_MODEL = 'lyria-realtime-exp';
 const LYRIA_SAMPLE_RATE = 48000; // Freqüència de la IA
 
-// Tiny silent MP3 to unlock iOS audio session (Using audio/mpeg for better Safari compatibility)
-const SILENT_MP3 = "data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//////////////////////////////////////////////////////////////////wAAAP//OEAAAAAAAAAAAAAAAAAAAAAAAMqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//OEAAAAAAAAAAAAAAAAAAAAAAABiqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+// 1 Second of Silence (Proven Base64 for iOS Unlock)
+const SILENT_MP3 = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU2LjYwLjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//////////////////////////////////////////////////////////////////wAAAP//OEAAAAAAAAAAAAAAAAAAAAAAAMqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//OEAAAAAAAAAAAAAAAAAAAAAAABiqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 
 class SoundscapeEngine {
     private ai: GoogleGenAI;
@@ -116,14 +116,28 @@ class SoundscapeEngine {
             this.ctx.resume().catch(e => console.warn("AudioContext resume failed", e));
         }
 
-        // --- STRATEGY 1: HTML5 AUDIO LOOP (Existing) ---
-        // Keeps the audio session active in the background
+        // --- STRATEGY 1: DOM-ATTACHED HTML5 AUDIO LOOP (Nuclear Option for iOS Mute Switch) ---
+        // We create a real <audio> element and attach it to the body.
+        // This forces iOS to treat the session as "Media Playback" instead of "Ambient".
         if (!this.silentAudio) {
-            this.silentAudio = new Audio();
-            this.silentAudio.loop = true; 
-            this.silentAudio.volume = 0.01; // Not 0, just in case iOS ignores 0 volume players
-            this.silentAudio.crossOrigin = "anonymous";
+            this.silentAudio = document.createElement('audio');
             this.silentAudio.src = SILENT_MP3;
+            this.silentAudio.loop = true;
+            this.silentAudio.preload = 'auto';
+            this.silentAudio.volume = 0.001; // Tiny volume (not 0) to force playback state
+            
+            // Magic attributes for iOS
+            this.silentAudio.setAttribute('playsinline', '');
+            this.silentAudio.setAttribute('webkit-playsinline', '');
+            
+            // Hide it visually
+            this.silentAudio.style.position = 'absolute';
+            this.silentAudio.style.top = '-1000px';
+            this.silentAudio.style.left = '-1000px';
+            this.silentAudio.style.opacity = '0';
+            this.silentAudio.style.pointerEvents = 'none';
+            
+            document.body.appendChild(this.silentAudio);
             
             const playPromise = this.silentAudio.play();
             if (playPromise !== undefined) {
@@ -137,9 +151,8 @@ class SoundscapeEngine {
             }
         }
 
-        // --- STRATEGY 2: WEB AUDIO OSCILLATOR KICK (New) ---
+        // --- STRATEGY 2: WEB AUDIO OSCILLATOR KICK ---
         // Generates a brief, nearly silent sound directly on the AudioContext
-        // to force the system to switch to "Playback" mode immediately (ignoring mute switch).
         try {
             const osc = this.ctx.createOscillator();
             const gain = this.ctx.createGain();
@@ -147,11 +160,11 @@ class SoundscapeEngine {
             gain.connect(this.ctx.destination);
             
             osc.type = 'sine';
-            osc.frequency.value = 50; // Low hum
-            gain.gain.value = 0.001; // Barely audible
+            osc.frequency.value = 50; 
+            gain.gain.value = 0.001; 
             
             osc.start();
-            osc.stop(this.ctx.currentTime + 0.1); // Stop after 100ms
+            osc.stop(this.ctx.currentTime + 0.1); 
         } catch (e) {
             console.warn("Oscillator unlock failed", e);
         }
