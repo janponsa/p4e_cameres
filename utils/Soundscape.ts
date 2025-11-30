@@ -42,11 +42,8 @@ async function decodeAudioData(
 }
 
 // --- CONFIGURACIÓ ---
-
 const LYRIA_MODEL = 'lyria-realtime-exp';
 const LYRIA_SAMPLE_RATE = 48000; 
-
-// Aquest és el WAV buit. És molt curt i net.
 const SILENT_WAV = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEAQB8AAEAfAAABAAgAAABmYWN0BAAAAAAAAABkYXRhAAAAAA==";
 
 class SoundscapeEngine {
@@ -63,7 +60,6 @@ class SoundscapeEngine {
     private windNode: AudioBufferSourceNode | null = null;
     private windGain: GainNode | null = null;
     private windFilter: BiquadFilterNode | null = null;
-
     private rainNode: AudioBufferSourceNode | null = null;
     private rainGain: GainNode | null = null;
     private rainFilter: BiquadFilterNode | null = null;
@@ -72,7 +68,6 @@ class SoundscapeEngine {
     private nextStartTime: number = 0;
     private bufferTime: number = 0.2; 
     
-    // Estat
     private currentVisualPrompt: string = "";
     private currentWeatherPrompt: string = "Calm atmosphere, safe environment";
     private lastContextUpdate: number = 0;
@@ -83,7 +78,6 @@ class SoundscapeEngine {
     private isConnecting: boolean = false;
     private reconnectTimer: any = null;
 
-    // iOS Hacks
     private silentAudio: HTMLAudioElement | null = null;
 
     constructor() {
@@ -94,10 +88,11 @@ class SoundscapeEngine {
     }
 
     /**
-     * PREPARE: La funció màgica per iOS.
-     * Cridar OBLIGATÒRIAMENT en un 'click' event.
+     * PREPARE: Cridar OBLIGATÒRIAMENT en un 'click' event.
      */
-    public prepare() {
+    public async prepare() {
+        console.log("[Soundscape] Preparing Audio Context...");
+        
         // 1. Inicialitzar AudioContext
         if (!this.ctx) {
             // @ts-ignore
@@ -106,23 +101,21 @@ class SoundscapeEngine {
             this.setupMixer();
         }
 
-        // 2. Despertar el context
+        // 2. Despertar el context (Wait for it!)
         if (this.ctx.state === 'suspended') {
-            this.ctx.resume();
+            await this.ctx.resume();
         }
 
-        // 3. NUCLEAR WAKE UP: Forcem el hardware d'àudio amb un oscil·lador
-        // Això és el que realment "trenca" el mode silenci.
+        // 3. NUCLEAR WAKE UP: Ara que el context està actiu, llancem l'ona.
         this.forceAudioHardwareWakeup();
 
-        // 4. Activar l'element HTML5 (per mantenir-ho viu en segon pla)
+        // 4. HTML5 Audio (Segon Pla)
         this.setupSilentElement();
         
-        // 5. Configurar MediaSession (Lock Screen)
+        // 5. Media Session (Lock Screen)
         this.setupMediaSession();
     }
 
-    // Aquesta funció genera un so pur invisible per forçar el mode "Playback"
     private forceAudioHardwareWakeup() {
         if (!this.ctx) return;
         try {
@@ -131,9 +124,9 @@ class SoundscapeEngine {
             osc.connect(gain);
             gain.connect(this.ctx.destination);
             osc.frequency.value = 440; 
-            gain.gain.value = 0.0001; // Inaudible però detectat pel sistema
+            gain.gain.value = 0.0001; 
             osc.start(this.ctx.currentTime);
-            osc.stop(this.ctx.currentTime + 0.1); // 100ms
+            osc.stop(this.ctx.currentTime + 0.1);
         } catch (e) {
             console.warn("Wakeup failed", e);
         }
@@ -147,12 +140,11 @@ class SoundscapeEngine {
             this.silentAudio.volume = 1.0;
             this.silentAudio.setAttribute('playsinline', 'true');
             this.silentAudio.setAttribute('webkit-playsinline', 'true');
-            // Amaguem l'element
             this.silentAudio.style.display = 'none';
             document.body.appendChild(this.silentAudio);
         }
         
-        // Intentem reproduir si està pausat
+        // Forçar play dins del gest de l'usuari
         if (this.silentAudio.paused) {
             this.silentAudio.play().catch(() => {});
         }
@@ -162,9 +154,9 @@ class SoundscapeEngine {
         if ('mediaSession' in navigator) {
             navigator.mediaSession.metadata = new MediaMetadata({
                 title: 'Atmosfera',
-                artist: 'AI Soundscape',
-                album: 'Live',
-                artwork: [{ src: 'https://placehold.co/512x512/png', sizes: '512x512', type: 'image/png' }]
+                artist: 'P4E Nexus',
+                album: 'Live Soundscape',
+                artwork: [{ src: 'https://app.projecte4estacions.com/images/logo_p4e_2023_h_blau_200.png', sizes: '200x200', type: 'image/png' }]
             });
             navigator.mediaSession.setActionHandler('play', () => this.play());
             navigator.mediaSession.setActionHandler('pause', () => this.pause());
@@ -186,8 +178,6 @@ class SoundscapeEngine {
         this.sfxBus.gain.value = this.sfxVolume;
         this.sfxBus.connect(this.masterGain);
     }
-
-    // --- LYRIA CONNECTION ---
 
     private async connectLyria() {
         if (this.isConnecting || this.session) return;
@@ -256,8 +246,6 @@ class SoundscapeEngine {
         this.nextStartTime += buffer.duration;
     }
 
-    // --- PROCEDURAL WEATHER FX ---
-
     private createNoiseBuffer(): AudioBuffer | null {
         if (!this.ctx) return null;
         const bufferSize = this.ctx.sampleRate * 4; 
@@ -320,8 +308,6 @@ class SoundscapeEngine {
         this.rainGain?.gain.setTargetAtTime(targetVol, t, 2);
     }
 
-    // --- MAIN CONTROL ---
-
     public play() {
         this.prepare(); 
         this.isPlaying = true;
@@ -355,10 +341,7 @@ class SoundscapeEngine {
             this.session?.pause();
         }, 600);
         
-        // NO pausem el silentAudio per evitar que el background process mori
     }
-
-    // --- CONTEXT & PROMPTS ---
 
     public updateContext(weather: WeatherData, visualSummary: string) {
         if (!this.isPlaying) return;
@@ -420,7 +403,6 @@ class SoundscapeEngine {
         }
     }
 
-    // Getters / Setters volum
     public getVolumes() { return { music: this.musicVolume, sfx: this.sfxVolume }; }
     public setMusicVolume(val: number) {
         this.musicVolume = val;
