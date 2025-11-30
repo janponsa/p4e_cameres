@@ -50,7 +50,7 @@ async function decodeAudioData(
 // --- CONFIGURACIÓ LYRIA ---
 
 const LYRIA_MODEL = 'lyria-realtime-exp';
-const SAMPLE_RATE = 48000; 
+const LYRIA_SAMPLE_RATE = 48000; // Freqüència de la IA (no del dispositiu)
 
 class SoundscapeEngine {
     private ai: GoogleGenAI;
@@ -94,7 +94,8 @@ class SoundscapeEngine {
     private initAudio() {
         if (!this.ctx) {
             const AC = window.AudioContext || (window as any).webkitAudioContext;
-            this.ctx = new AC({ sampleRate: SAMPLE_RATE });
+            // FIX iOS: No forcem sampleRate al constructor, deixem que l'iPhone decideixi (sol ser 44.1k o 48k)
+            this.ctx = new AC();
             
             // Crear nodes de guany (Busos)
             this.masterGain = this.ctx.createGain();
@@ -111,8 +112,25 @@ class SoundscapeEngine {
             this.musicBus.gain.value = this.musicVolume;
             this.sfxBus.gain.value = this.sfxVolume;
 
+            // FIX iOS: Unlock strategy
+            this.unlockMobileAudio();
+
             // INICIALITZAR CAPES METEOROLÒGIQUES (SFX)
             this.initWeatherLayers();
+        }
+    }
+
+    // FIX iOS: Reprodueix un buffer silenciós per desbloquejar l'AudioContext a Safari
+    private unlockMobileAudio() {
+        if (!this.ctx) return;
+        const buffer = this.ctx.createBuffer(1, 1, 22050);
+        const source = this.ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(this.ctx.destination);
+        source.start(0);
+
+        if (this.ctx.state === 'suspended') {
+            this.ctx.resume();
         }
     }
 
@@ -238,7 +256,9 @@ class SoundscapeEngine {
         if (this.isPlaying) return;
         
         this.initAudio();
-        if (this.ctx?.state === 'suspended') {
+        
+        // FIX iOS: Force resume on play interaction
+        if (this.ctx && this.ctx.state === 'suspended') {
             await this.ctx.resume();
         }
 
@@ -277,7 +297,7 @@ class SoundscapeEngine {
              setTimeout(() => {
                  if (!this.isPlaying && this.session) {
                      this.session.pause();
-                     if (this.ctx) this.ctx.suspend();
+                     if (this.ctx && this.ctx.state === 'running') this.ctx.suspend();
                      console.log("⏸️ Soundscape pausat.");
                  }
              }, 1600);
@@ -319,7 +339,7 @@ class SoundscapeEngine {
                         const audioBuffer = await decodeAudioData(
                             decode(rawData),
                             this.ctx,
-                            SAMPLE_RATE,
+                            LYRIA_SAMPLE_RATE, // Mantingut el sample rate de la IA
                             2
                         );
 
