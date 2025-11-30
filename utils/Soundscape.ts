@@ -49,10 +49,11 @@ async function decodeAudioData(
 // --- CONFIGURACIÓ LYRIA ---
 
 const LYRIA_MODEL = 'lyria-realtime-exp';
-const LYRIA_SAMPLE_RATE = 48000; // Freqüència de la IA
+const LYRIA_SAMPLE_RATE = 48000; 
 
-// 1 Second of Silence (Proven Base64 for iOS Unlock)
-const SILENT_MP3 = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU2LjYwLjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//////////////////////////////////////////////////////////////////wAAAP//OEAAAAAAAAAAAAAAAAAAAAAAAMqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//OEAAAAAAAAAAAAAAAAAAAAAAABiqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+// Tiny silent WAV (Universal compatibility for iOS Unlock)
+// RIFF header, WAVE fmt, data chunk (empty)
+const SILENT_WAV = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEAQB8AAEAfAAABAAgAAABmYWN0BAAAAAAAAABkYXRhAAAAAA==";
 
 class SoundscapeEngine {
     private ai: GoogleGenAI;
@@ -104,76 +105,63 @@ class SoundscapeEngine {
 
     /**
      * Prepare AudioContext (iOS Unlock)
-     * Has de cridar això al primer clic de l'usuari (ex: botó Entrar)
+     * Must be called on user interaction
      */
     public prepare() {
+        // 1. Init Context
         if (!this.ctx) {
-            // No forcem sampleRate, deixem que el dispositiu decideixi per evitar glitches en iOS
             this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
             this.setupMixer();
         }
 
+        // 2. Resume Context
         if (this.ctx.state === 'suspended') {
             this.ctx.resume().catch(e => console.warn("AudioContext resume failed", e));
         }
 
-        // --- STRATEGY 1: DOM-ATTACHED HTML5 AUDIO LOOP (Nuclear Option for iOS Mute Switch) ---
-        // We create a real <audio> element and attach it to the body.
-        // This forces iOS to treat the session as "Media Playback" instead of "Ambient".
+        // 3. HTML5 Audio Unlock (The "Mute Switch" Bypass)
+        // Using WAV to avoid NotSupportedError on some iOS versions
         if (!this.silentAudio) {
             this.silentAudio = document.createElement('audio');
-            this.silentAudio.src = SILENT_MP3;
+            this.silentAudio.src = SILENT_WAV;
             this.silentAudio.loop = true;
             this.silentAudio.preload = 'auto';
-            // KEY FIX: Volume must be 1.0 (Max) so iOS thinks it's "important" media.
-            // Since the file is silent, it won't actually make noise.
+            // Important: iOS needs to think we are playing "real" audio
             this.silentAudio.volume = 1.0; 
             
-            // Magic attributes for iOS
+            // Attributes to ensure background capability
             this.silentAudio.setAttribute('playsinline', '');
             this.silentAudio.setAttribute('webkit-playsinline', '');
             
-            // Hide it visually
+            // Hide it
             this.silentAudio.style.position = 'absolute';
-            this.silentAudio.style.top = '-1000px';
-            this.silentAudio.style.left = '-1000px';
-            this.silentAudio.style.opacity = '0';
-            this.silentAudio.style.pointerEvents = 'none';
             this.silentAudio.style.width = '1px';
             this.silentAudio.style.height = '1px';
+            this.silentAudio.style.opacity = '0';
+            this.silentAudio.style.pointerEvents = 'none';
             
             document.body.appendChild(this.silentAudio);
-            
-            const playPromise = this.silentAudio.play();
-            if (playPromise !== undefined) {
-                playPromise.catch((e) => {
-                    console.warn("Silent audio unlock failed (non-fatal):", e);
-                });
-            }
-        } else {
-            if (this.silentAudio.paused) {
-                this.silentAudio.play().catch(() => {});
-            }
         }
 
-        // --- STRATEGY 2: WEB AUDIO KEEP-ALIVE ---
-        // Play a silent buffer continuously on the AudioContext to prevent it from sleeping
+        // Always try to play if paused, to ensure "Active" session
+        if (this.silentAudio.paused) {
+            this.silentAudio.play().catch((e) => {
+                console.warn("Silent audio unlock failed (non-fatal):", e);
+            });
+        }
+
+        // 4. Web Audio Keep-Alive
+        // Prevents the AudioContext from being suspended by OS when backgrounded
         if (!this.keepAliveNode && this.ctx) {
             try {
-                // Create an empty buffer source
                 const emptyBuffer = this.ctx.createBuffer(1, 1, 22050);
                 const source = this.ctx.createBufferSource();
                 source.buffer = emptyBuffer;
+                source.loop = true;
                 source.connect(this.ctx.destination);
                 source.start(0);
-                
-                // Note: Regular buffer sources stop after playing. 
-                // Loop a tiny silent buffer to keep the context running "hot".
-                const loopSource = this.ctx.createBufferSource();
-                loopSource.buffer = emptyBuffer;
-                loopSource.loop = true;
-                loopSource.connect(this.ctx.destination);
-                loopSource.start(0);
+                // Keep reference to prevent GC?
+                // Actually source nodes are GC'd when done, but looping ones stay.
             } catch(e) {
                 console.warn("Keep-alive node failed", e);
             }
@@ -183,17 +171,14 @@ class SoundscapeEngine {
     private setupMixer() {
         if (!this.ctx) return;
         
-        // Master
         this.masterGain = this.ctx.createGain();
         this.masterGain.gain.value = 1.0;
         this.masterGain.connect(this.ctx.destination);
 
-        // Music Bus
         this.musicBus = this.ctx.createGain();
         this.musicBus.gain.value = this.musicVolume;
         this.musicBus.connect(this.masterGain);
 
-        // SFX Bus
         this.sfxBus = this.ctx.createGain();
         this.sfxBus.gain.value = this.sfxVolume;
         this.sfxBus.connect(this.masterGain);
@@ -232,7 +217,7 @@ class SoundscapeEngine {
                         if (msg.setupComplete) {
                             console.log("[Soundscape] Session Ready");
                             this.isConnecting = false;
-                            this.session.play(); // IMPORTANT!
+                            this.session.play(); 
                             this.sendPrompts();
                         }
                         if (msg.serverContent?.audioChunks?.[0]?.data && this.ctx && this.musicBus) {
@@ -266,7 +251,7 @@ class SoundscapeEngine {
 
     private triggerReconnection() {
         if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-        if (!this.isPlaying) return; // Don't reconnect if paused by user
+        if (!this.isPlaying) return; 
 
         this.reconnectTimer = setTimeout(() => {
             console.log("[Soundscape] Attempting auto-reconnect...");
@@ -289,7 +274,7 @@ class SoundscapeEngine {
         this.nextStartTime += buffer.duration;
     }
 
-    // --- PROCEDURAL WEATHER FX (Brown/Pink Noise) ---
+    // --- PROCEDURAL WEATHER FX ---
 
     private createNoiseBuffer(): AudioBuffer | null {
         if (!this.ctx) return null;
@@ -331,10 +316,7 @@ class SoundscapeEngine {
         if (!this.ctx || !this.windFilter || !this.windGain) return;
         
         const t = this.ctx.currentTime;
-        
-        // Map Wind 0-100kmh to Filter Freq 100-800Hz
         const freq = Math.max(100, Math.min(800, 100 + (kmh * 7)));
-        // Map Wind to Volume 0-0.6
         const vol = Math.max(0, Math.min(0.6, kmh / 120));
 
         this.windFilter.frequency.setTargetAtTime(freq, t, 2);
@@ -344,7 +326,6 @@ class SoundscapeEngine {
     private startRainEngine(isRaining: boolean, intensity: number) {
         if (!this.ctx || !this.sfxBus) return;
 
-        // Create if missing
         if (!this.rainNode) {
             const noise = this.createNoiseBuffer();
             if (!noise) return;
@@ -355,7 +336,7 @@ class SoundscapeEngine {
 
             this.rainFilter = this.ctx.createBiquadFilter();
             this.rainFilter.type = 'lowpass';
-            this.rainFilter.frequency.value = 800; // Muffled rain
+            this.rainFilter.frequency.value = 800; 
 
             this.rainGain = this.ctx.createGain();
             this.rainGain.gain.value = 0;
@@ -375,21 +356,18 @@ class SoundscapeEngine {
     // --- MAIN CONTROL ---
 
     public play() {
-        this.prepare(); // Ensure ctx is ready & silent audio is looping
+        this.prepare(); 
         this.isPlaying = true;
 
-        // Connect Lyria
         if (!this.session) {
             this.connectLyria();
         } else {
             this.session.play();
         }
 
-        // Start FX Engines
         if (!this.windNode) this.startWindEngine(10);
         if (!this.rainNode) this.startRainEngine(false, 0);
 
-        // Fade In Master
         if (this.ctx && this.masterGain) {
             this.masterGain.gain.setTargetAtTime(1, this.ctx.currentTime, 1);
         }
@@ -398,17 +376,16 @@ class SoundscapeEngine {
     public pause() {
         this.isPlaying = false;
         
-        // Fade Out Master
         if (this.ctx && this.masterGain) {
             this.masterGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.5);
         }
 
-        // Pause Lyria Session after fade
         setTimeout(() => {
             this.session?.pause();
         }, 600);
 
-        // PAUSE SILENT AUDIO TO SAVE BATTERY
+        // OPTIONAL: Keep silent audio playing if you want instant resume
+        // But pausing saves battery.
         if (this.silentAudio) {
             this.silentAudio.pause();
         }
@@ -419,25 +396,18 @@ class SoundscapeEngine {
     public updateContext(weather: WeatherData, visualSummary: string) {
         if (!this.isPlaying) return;
 
-        // Rate Limit Updates (10s)
         const now = Date.now();
         if (now - this.lastContextUpdate < 10000) return;
         this.lastContextUpdate = now;
 
-        // Perform Ducking (Fade down -> Update -> Fade up)
         this.performDucking();
 
-        // 1. Determine Prompts
         this.currentVisualPrompt = visualSummary;
         this.currentWeatherPrompt = this.buildAtmospherePrompt(weather);
 
-        // 2. Send to Lyria
-        setTimeout(() => this.sendPrompts(), 1000); // Wait for ducking down
+        setTimeout(() => this.sendPrompts(), 1000);
 
-        // 3. Update Procedural FX
         this.updateWindParams(weather.wind);
-        
-        // WMO Codes for Rain: 51-67, 80-82, 95-99
         const isRaining = (weather.code !== undefined) && (
             (weather.code >= 51 && weather.code <= 67) || 
             (weather.code >= 80 && weather.code <= 82) || 
@@ -449,16 +419,13 @@ class SoundscapeEngine {
     private performDucking() {
         if (!this.ctx || !this.masterGain) return;
         const t = this.ctx.currentTime;
-        // Dip volume to 20%
         this.masterGain.gain.setTargetAtTime(0.2, t, 0.5);
-        // Return to 100% after 2.5s
         this.masterGain.gain.setTargetAtTime(1.0, t + 2.5, 1.5);
     }
 
     private buildAtmospherePrompt(w: WeatherData): string {
         const isDay = w.isDay !== undefined ? w.isDay : true;
         
-        // ENDEL STYLE LOGIC: DAY vs NIGHT
         const baseVibe = isDay 
             ? "Focus mode, alpha waves, steady pulse, clarity, flow state, major key, organic texture" 
             : "Deep sleep mode, delta waves, 432Hz, no rhythm, floating, subconscious, warm blanket, minimal";
@@ -467,7 +434,6 @@ class SoundscapeEngine {
         if (w.wind > 40) weatherVibe = "Deep airflow texture, white noise layers";
         else if (w.wind > 20) weatherVibe = "Breezy texture, movement";
 
-        // Rain Logic using WMO Codes
         if (w.code && w.code >= 51) {
             weatherVibe += ", wet acoustics, rainfall texture, cozy shelter";
         } else if (w.code && w.code >= 71) {
@@ -480,11 +446,6 @@ class SoundscapeEngine {
     private sendPrompts() {
         if (!this.session) return;
         
-        // Weighting: 
-        // Visual (Specific location) = 1.0
-        // Weather/Circadian (Endel Vibe) = 1.2 (Higher priority for functional audio)
-        // Genre (Safety) = 0.5
-
         const prompts = [
             { text: this.currentVisualPrompt, weight: 1.0 },
             { text: this.currentWeatherPrompt, weight: 1.2 },
