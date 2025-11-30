@@ -91,6 +91,9 @@ class SoundscapeEngine {
     private isConnecting: boolean = false;
     private reconnectTimer: any = null;
 
+    // iOS Unlock
+    private silentAudio: HTMLAudioElement | null = null;
+
     constructor() {
         this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     }
@@ -110,9 +113,19 @@ class SoundscapeEngine {
             this.ctx.resume();
         }
 
-        // Play Silent MP3 to force iOS into "Playback" mode
-        const audio = new Audio(SILENT_MP3);
-        audio.play().catch(() => {});
+        // Force iOS "Playback" mode by playing a LOOPED silent audio element
+        // This is crucial for bypassing the mute switch
+        if (!this.silentAudio) {
+            this.silentAudio = new Audio(SILENT_MP3);
+            this.silentAudio.loop = true; // KEEP IT ALIVE
+            this.silentAudio.volume = 0.01; // Not 0, just in case iOS ignores 0 volume players
+            this.silentAudio.play().catch((e) => console.warn("Silent audio unlock failed", e));
+        } else {
+            // Ensure it's playing if it was paused
+            if (this.silentAudio.paused) {
+                this.silentAudio.play().catch(() => {});
+            }
+        }
     }
 
     private setupMixer() {
@@ -310,7 +323,7 @@ class SoundscapeEngine {
     // --- MAIN CONTROL ---
 
     public play() {
-        this.prepare(); // Ensure ctx is ready
+        this.prepare(); // Ensure ctx is ready & silent audio is looping
         this.isPlaying = true;
 
         // Connect Lyria
@@ -342,6 +355,11 @@ class SoundscapeEngine {
         setTimeout(() => {
             this.session?.pause();
         }, 600);
+
+        // PAUSE SILENT AUDIO TO SAVE BATTERY
+        if (this.silentAudio) {
+            this.silentAudio.pause();
+        }
     }
 
     // --- CONTEXT & PROMPTS ---
