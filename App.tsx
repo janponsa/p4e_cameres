@@ -60,8 +60,7 @@ function App() {
   }, []);
 
   const handleOnboardingComplete = () => {
-      // UNLOCK IOS AUDIO ON USER INTERACTION
-      Soundscape.prepare(); 
+      // Audio unlock is now handled via onUnlockAudio prop for immediate execution
       localStorage.setItem('p4e_nexus_onboarding_seen', 'true');
       setShowOnboarding(false);
   };
@@ -324,7 +323,12 @@ function App() {
   return (
     <div className={`flex h-screen overflow-hidden font-sans transition-colors duration-500 relative bg-gray-900`}>
       
-      {showOnboarding && <Onboarding onComplete={handleOnboardingComplete} />}
+      {showOnboarding && (
+        <Onboarding 
+            onUnlockAudio={() => Soundscape.prepare()} 
+            onComplete={handleOnboardingComplete} 
+        />
+      )}
 
       {/* --- BACKGROUND LAYER --- */}
       <div className={`absolute inset-0 z-0 overflow-hidden transition-colors duration-700
