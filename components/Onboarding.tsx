@@ -1,31 +1,32 @@
-
 import React, { useState, useEffect } from 'react';
 
 interface OnboardingProps {
     onComplete: () => void;
+    onUnlockAudio: () => void; // <--- AFEGIR AIXÒ
 }
 
-const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
+const Onboarding: React.FC<OnboardingProps> = ({ onComplete, onUnlockAudio }) => { // <--- REBRE-HO AQUÍ
     const [step, setStep] = useState(0);
     const [isExiting, setIsExiting] = useState(false);
 
     // Gestió de la seqüència temporal
     useEffect(() => {
         if (step === 0) {
-            // Pas 1: Logo intro (3 segons)
             const timer = setTimeout(() => setStep(1), 3500);
             return () => clearTimeout(timer);
         }
         if (step === 1) {
-            // Pas 2: Soundscape intro (4 segons)
             const timer = setTimeout(() => setStep(2), 4500);
             return () => clearTimeout(timer);
         }
     }, [step]);
 
     const handleStart = () => {
+        // CRÍTIC: Despertar l'àudio just quan l'usuari toca el botó
+        if (onUnlockAudio) onUnlockAudio(); 
+        
         setIsExiting(true);
-        setTimeout(onComplete, 1000); // Esperar l'animació de sortida
+        setTimeout(onComplete, 1000); 
     };
 
     return (
@@ -61,7 +62,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 {/* PAS 1: SOUNDSCAPE */}
                 {step === 1 && (
                     <div className="animate-fade-in flex flex-col items-center gap-8">
-                        {/* Visualitzador Abstracte */}
                         <div className="relative w-32 h-32 flex items-center justify-center">
                             <div className="absolute inset-0 border border-white/10 rounded-full animate-[ping_3s_ease-in-out_infinite]"></div>
                             <div className="absolute inset-2 border border-white/20 rounded-full animate-[ping_3s_ease-in-out_infinite_0.5s]"></div>
@@ -94,8 +94,8 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                         </div>
 
                         <button 
-                            onClick={handleStart}
-                            className="group relative px-8 py-3 bg-white text-black rounded-full font-medium text-sm tracking-wide transition-all hover:scale-105 hover:shadow-[0_0_30px_rgba(255,255,255,0.3)] active:scale-95"
+                            onClick={handleStart} // ARA SÍ QUE CRIDARÀ A SOUNDSCAPE
+                            className="group relative px-8 py-3 bg-white text-black rounded-full font-medium text-sm tracking-wide transition-all hover:scale-105 hover:shadow-[0_0_30px_rgba(255,255,255,0.3)] active:scale-95 cursor-pointer"
                         >
                             <span className="relative z-10 flex items-center gap-2">
                                 ENTRAR <i className="ph-bold ph-arrow-right group-hover:translate-x-1 transition-transform"></i>
@@ -108,11 +108,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                     </div>
                 )}
 
-            </div>
-
-            {/* INDICADOR DE PROGRÉS INFERIOR (Opcional, estil iOS) */}
-            <div className="absolute bottom-10 left-0 right-0 flex justify-center">
-                 {/* Es podria posar informació legal o versió aquí */}
             </div>
         </div>
     );
