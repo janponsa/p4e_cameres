@@ -1,0 +1,64 @@
+:root {
+  --app-bg: #000;
+  --app-text: #fff;
+  --border-color: #444;
+  --border-hover: #666;
+  --accent-color: var(--brand-blue);
+  --upload-hover-bg: rgba(255,255,255,0.02);
+  --upload-active-bg: rgba(51, 136, 255,0.1);
+  --toast-bg: #111;
+  --toast-text: #fff;
+  --toast-border: #333;
+  --button-bg: transparent;
+  --button-border: #fff;
+  --button-icon: #fff;
+  --secondary-button-bg: #222;
+  --secondary-button-text: #eee;
+  --secondary-button-hover-bg: #333;
+
+  --brand-green: #00D234;
+  --brand-red: #ff3333;
+  --brand-blue: #3388ff;
+}
+
+html {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  font-family: 'Nanum Gothic Coding', monospace;
+  background: var(--app-bg);
+  color: var(--app-text);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+body {
+  height: 100svh; /* Use small viewport height for mobile */
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  font-family: 'Nanum Gothic Coding', monospace;
+  background: var(--app-bg);
+  color: var(--app-text);
+}
+
+body.dragging {
+  /* No specific styles needed here if drag events are handled by the component */
+}
+
+body.dragging * {
+  user-select: none; /* Keep this for better drag experience */
+  /* pointer-events: none;  This might be too broad, remove if it causes issues */
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Ensure the app container fills the screen */
+sound-explorer {
+  min-height: 100vh;
+  min-height: 100svh;
+  width: 100%;
+  display: block;
+}

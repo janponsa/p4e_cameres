@@ -1,0 +1,6 @@
+{
+  "name": "IMAGE_RADIO",
+  "description": "Upload images and hear what they sound like with AI-generated music.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
