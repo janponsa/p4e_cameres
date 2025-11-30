@@ -16,18 +16,24 @@ const AmbientHlsPlayer = React.memo(({
     streamUrl, 
     isActive, 
     shouldLoad,
-    onReady 
+    onReady,
+    onError
 }: { 
     streamUrl: string, 
     isActive: boolean, 
     shouldLoad: boolean,
-    onReady?: () => void
+    onReady?: () => void,
+    onError?: () => void
 }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const hlsRef = useRef<Hls | null>(null);
+    const loadTimeoutRef = useRef<number | null>(null);
 
     useEffect(() => {
-        // CLEANUP: If we shouldn't load, destroy everything to save bandwidth/memory
+        // RESET
+        if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
+
+        // CLEANUP: If we shouldn't load, destroy everything
         if (!shouldLoad) {
             if (hlsRef.current) {
                 hlsRef.current.destroy();
@@ -43,7 +49,14 @@ const AmbientHlsPlayer = React.memo(({
         const video = videoRef.current;
         if (!video) return;
 
-        // Cache bust slightly less aggressive (every 10s) to allow some browser caching
+        // FAIL-SAFE: If video doesn't play in 7 seconds, trigger error to skip
+        loadTimeoutRef.current = window.setTimeout(() => {
+            if (video.paused && onError) {
+                console.warn("Stream timeout, skipping:", streamUrl);
+                onError();
+            }
+        }, 7000);
+
         const cacheBust = Math.floor(Date.now() / 10000); 
         const urlWithCache = `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}t=${cacheBust}`;
 
@@ -54,8 +67,7 @@ const AmbientHlsPlayer = React.memo(({
                 enableWorker: true,
                 lowLatencyMode: true,
                 backBufferLength: 0, 
-                startLevel: -1, 
-                maxBufferLength: 10, 
+                startLevel: -1,
             });
             
             hlsRef.current = hls;
@@ -66,12 +78,23 @@ const AmbientHlsPlayer = React.memo(({
                 video.play().catch(() => {});
             });
 
+            hls.on(Hls.Events.ERROR, (event, data) => {
+                if (data.fatal) {
+                    if (onError) onError();
+                    hls.destroy();
+                }
+            });
+
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
             video.src = urlWithCache;
             video.play().catch(() => {});
+            video.addEventListener('error', () => {
+                if (onError) onError();
+            });
         }
 
         const handlePlaying = () => {
+            if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
             if (onReady) onReady();
         };
 
@@ -82,6 +105,7 @@ const AmbientHlsPlayer = React.memo(({
                 hlsRef.current.destroy();
                 hlsRef.current = null;
             }
+            if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
         };
     }, [streamUrl, shouldLoad]);
 
@@ -89,11 +113,12 @@ const AmbientHlsPlayer = React.memo(({
         <div className={`absolute inset-0 w-full h-full bg-black transition-opacity duration-1000 ${isActive ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}>
             <video 
                 ref={videoRef}
-                className="w-full h-full object-cover scale-105 animate-[kenburnsVideo_30s_infinite_alternate]"
+                className="w-full h-full object-contain bg-black"
                 muted
                 playsInline
             />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20 pointer-events-none"></div>
+            {/* Reduced gradient overlay */}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20 pointer-events-none"></div>
         </div>
     );
 });
@@ -121,7 +146,6 @@ type WeatherCacheEntry = {
 };
 
 const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
-    // Playlist State (Shuffled)
     const [playlist, setPlaylist] = useState<Webcam[]>([]);
     
     // Slot Logic
@@ -131,24 +155,25 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
 
     // Data State
     const [weather, setWeather] = useState<WeatherData | null>(null);
-    const [currentTime, setCurrentTime] = useState(new Date());
     const [progress, setProgress] = useState(0);
     const [isHovering, setIsHovering] = useState(false);
     
+    // Loading State
+    const [isInitialized, setIsInitialized] = useState(false);
+    
     // REFS
     const weatherCache = useRef<Record<string, WeatherCacheEntry>>({});
-    const lastAudioUpdate = useRef<number>(0); // Track last soundscape update
+    const lastAudioUpdate = useRef<number>(0);
     
     // CONSTANTS
-    const DURATION = 20000; // 20s
-    const PRELOAD_PCT = 75; // Start loading next cam at 75%
-    const CACHE_TTL = 10 * 60 * 1000; // 10 Minutes Cache
-    const AUDIO_UPDATE_INTERVAL = 3 * 60 * 1000; // Update audio context only every 3 minutes
+    const DURATION = 20000; 
+    const PRELOAD_PCT = 75; 
+    const CACHE_TTL = 10 * 60 * 1000; 
+    const AUDIO_UPDATE_INTERVAL = 3 * 60 * 1000;
 
     // 0. INIT & SHUFFLE
     useEffect(() => {
         if (webcams.length > 0) {
-            // Fisher-Yates Shuffle
             const shuffled = [...webcams];
             for (let i = shuffled.length - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
@@ -156,14 +181,13 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             }
             setPlaylist(shuffled);
             
-            // Set Initial Global Soundscape (Generic) if not already playing
+            // Initial Soundscape
             if (Date.now() - lastAudioUpdate.current > AUDIO_UPDATE_INTERVAL) {
-                // Use a generic pleasant start
                 const initialWeather: WeatherData = {
                     temp: "15", humidity: 50, wind: 10, rain: 0, 
                     isReal: false, isDay: true, code: 1
                 };
-                Soundscape.updateContext(initialWeather, "Ambient TV Mode. Paisatges relaxants de muntanya.");
+                Soundscape.updateContext(initialWeather, "Ambient TV Mode. Paisatges relaxants.");
                 lastAudioUpdate.current = Date.now();
             }
         }
@@ -173,9 +197,35 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
         ? (activeSlot === 'A' ? playlist[indexA] : playlist[indexB])
         : null;
 
+    // Helper to advance to next camera
+    const advanceCamera = () => {
+        setActiveSlot(prev => {
+            const nextSlot = prev === 'A' ? 'B' : 'A';
+            setTimeout(() => {
+                // Update hidden slot
+                if (nextSlot === 'A') setIndexB(prevIndex => (prevIndex + 1) % playlist.length);
+                else setIndexA(prevIndex => (prevIndex + 1) % playlist.length);
+            }, 500); 
+            return nextSlot;
+        });
+    };
+
+    // Callback when stream fails or times out
+    const handleStreamError = () => {
+        // Immediate skip
+        advanceCamera();
+    };
+
+    // Callback when stream is ready (used for initial loading)
+    const handleStreamReady = () => {
+        if (!isInitialized) {
+            setIsInitialized(true);
+        }
+    };
+
     // 1. ROTATION TIMER
     useEffect(() => {
-        if (playlist.length === 0) return;
+        if (playlist.length === 0 || !isInitialized) return;
 
         const startTime = Date.now();
         let switchScheduled = false;
@@ -188,57 +238,36 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
 
             if (elapsed >= DURATION && !switchScheduled) {
                 switchScheduled = true;
-                setActiveSlot(prev => {
-                    const nextSlot = prev === 'A' ? 'B' : 'A';
-                    setTimeout(() => {
-                        if (nextSlot === 'A') setIndexB((indexA + 1) % playlist.length);
-                        else setIndexA((indexB + 1) % playlist.length);
-                    }, 1500); 
-                    return nextSlot;
-                });
+                advanceCamera();
             }
         }, 100);
 
         return () => clearInterval(timer);
-    }, [indexA, indexB, playlist]);
+    }, [indexA, indexB, playlist, isInitialized]); // Reset on index change
 
-    // 2. CLOCK
-    useEffect(() => {
-        const t = setInterval(() => setCurrentTime(new Date()), 1000);
-        return () => clearInterval(t);
-    }, []);
-
-    // 3. ROBUST WEATHER FETCHING & CACHING
+    // 3. WEATHER FETCHING
     useEffect(() => {
         if (!activeWebcam) return;
         
-        // --- CACHE CHECK ---
         const cached = weatherCache.current[activeWebcam.id];
         if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-            // console.log(`[Cache Hit] ${activeWebcam.name}`);
             setWeather(cached.data);
             return;
         }
-
-        // console.log(`[Fetching] ${activeWebcam.name}`);
-        setWeather(null); // Clear previous weather to show loading/empty state if desired, or keep old one? Better clear or show spinner logic.
 
         const fetchData = async () => {
             try {
                 let finalData: WeatherData | null = null;
                 let omData: any = null;
 
-                // A. FETCH OPEN-METEO (Always needed for icons/backup)
                 if (activeWebcam.lat && activeWebcam.lng) {
                     try {
                         const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${activeWebcam.lat}&longitude=${activeWebcam.lng}&current=temperature_2m,weather_code,is_day,wind_speed_10m&timezone=auto`);
                         omData = await res.json();
-                    } catch(e) { console.warn("OM Fetch Fail", e); }
+                    } catch(e) {}
                 }
 
-                // B. FETCH REAL STATION (If exists)
                 if (activeWebcam.meteoStationType && activeWebcam.meteoStationId) {
-                    // (Simplified logic for speed)
                     if (activeWebcam.meteoStationType === 'meteocat') {
                         const now = new Date();
                         const twoHoursAgo = new Date(now.getTime() - (120 * 60 * 1000));
@@ -282,10 +311,8 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                     }
                 }
 
-                // C. MERGE DATA
                 if (omData && omData.current) {
                     if (!finalData) {
-                        // Pure OpenMeteo Data
                         finalData = {
                             temp: omData.current.temperature_2m.toFixed(1),
                             humidity: 0,
@@ -295,30 +322,25 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                             isDay: omData.current.is_day === 1
                         };
                     } else {
-                        // Real data + OM Icons
                         finalData.code = omData.current.weather_code;
                         finalData.isDay = omData.current.is_day === 1;
                     }
                 }
 
                 if (finalData) {
-                    // SAVE TO CACHE
                     weatherCache.current[activeWebcam.id] = {
                         data: finalData,
                         timestamp: Date.now()
                     };
                     setWeather(finalData);
 
-                    // AUDIO UPDATE (THROTTLED 3 MIN)
-                    // Only update soundscape if enough time has passed to allow music to develop
                     if (Date.now() - lastAudioUpdate.current > AUDIO_UPDATE_INTERVAL) {
-                        // console.log("🎵 Updating Ambient Soundscape (Slow Drift)");
-                        Soundscape.updateContext(finalData, `Mode TV. Viatge visual per ${activeWebcam.name}.`);
+                        Soundscape.updateContext(finalData, "Mode TV.");
                         lastAudioUpdate.current = Date.now();
                     }
                 }
 
-            } catch (e) { console.error("Weather fetch error", e); }
+            } catch (e) { console.error(e); }
         };
 
         fetchData();
@@ -337,11 +359,21 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             onMouseLeave={() => setIsHovering(false)}
             onClick={() => setIsHovering(h => !h)}
         >
+            {/* INITIAL LOADING SCREEN */}
+            {!isInitialized && (
+                <div className="absolute inset-0 z-50 bg-black flex flex-col items-center justify-center">
+                    <i className="ph-bold ph-broadcast text-4xl text-indigo-500 animate-pulse mb-4"></i>
+                    <span className="text-white/50 text-xs uppercase tracking-[0.3em]">Sintonitzant mode TV...</span>
+                </div>
+            )}
+
             {/* Slot A */}
             <AmbientHlsPlayer 
                 streamUrl={playlist[indexA].streamUrl} 
                 isActive={activeSlot === 'A'} 
                 shouldLoad={activeSlot === 'A' || (activeSlot === 'B' && progress > PRELOAD_PCT)} 
+                onReady={activeSlot === 'A' ? handleStreamReady : undefined}
+                onError={activeSlot === 'A' ? handleStreamError : undefined}
             />
             
             {/* Slot B */}
@@ -349,84 +381,69 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                 streamUrl={playlist[indexB].streamUrl} 
                 isActive={activeSlot === 'B'} 
                 shouldLoad={activeSlot === 'B' || (activeSlot === 'A' && progress > PRELOAD_PCT)} 
+                onReady={activeSlot === 'B' ? handleStreamReady : undefined}
+                onError={activeSlot === 'B' ? handleStreamError : undefined}
             />
 
             {/* Noise Overlay */}
             <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-15 mix-blend-overlay pointer-events-none z-20"></div>
 
-            {/* HUD BOTTOM LEFT (COMPACT & MODERN) */}
-            <div className="absolute bottom-10 left-10 z-30 flex flex-col gap-1 animate-fade-in drop-shadow-lg pointer-events-none">
+            {/* HUD BOTTOM LEFT - COMPACT & CLEAN */}
+            <div className={`absolute bottom-6 left-6 sm:bottom-10 sm:left-10 z-30 flex flex-col gap-1 transition-opacity duration-500 pointer-events-none ${!isInitialized ? 'opacity-0' : 'opacity-100'}`}>
                 {/* Meta Header */}
-                <div className="flex items-center gap-3 mb-1 opacity-90">
-                    <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-red-600/90 backdrop-blur-sm text-white text-[10px] font-bold uppercase tracking-wider shadow-lg border border-red-500/50">
-                        <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div> LIVE
+                <div className="flex items-center gap-3 mb-1 opacity-80">
+                    <div className="flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-red-600/80 backdrop-blur-sm text-white text-[8px] sm:text-[9px] font-bold uppercase tracking-wider shadow-lg border border-red-500/50">
+                        <div className="w-1 h-1 bg-white rounded-full animate-pulse"></div> LIVE
                     </div>
-                    <span className="text-white/80 text-xs font-bold uppercase tracking-widest border-l border-white/30 pl-3">
+                    <span className="text-white/70 text-[9px] sm:text-[10px] font-bold uppercase tracking-widest border-l border-white/20 pl-2">
                         {activeWebcam.region}
                     </span>
                 </div>
                 
-                {/* Main Title */}
-                <h1 className="text-5xl md:text-6xl font-bold tracking-tighter text-white leading-none shadow-black drop-shadow-2xl">
+                {/* Main Title - Much Smaller */}
+                <h1 className="text-2xl sm:text-4xl md:text-5xl font-bold tracking-tighter text-white leading-none shadow-black drop-shadow-md">
                     {activeWebcam.name}
                 </h1>
 
                 {/* Weather Info */}
                 {weather && (
-                    <div className="flex items-center gap-6 mt-2 text-white/90 bg-black/20 backdrop-blur-md px-4 py-2 rounded-xl border border-white/5 w-fit">
-                        <div className="flex items-center gap-3">
-                            {weatherIcon && <i className={`ph-fill ${weatherIcon.icon} text-3xl ${weatherIcon.color} drop-shadow-md`}></i>}
-                            <span className="text-4xl font-light tracking-tighter">{weather.temp}°</span>
+                    <div className="flex items-center gap-3 sm:gap-5 mt-2 text-white/90 bg-black/30 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/5 w-fit">
+                        <div className="flex items-center gap-2">
+                            {weatherIcon && <i className={`ph-fill ${weatherIcon.icon} text-lg sm:text-2xl ${weatherIcon.color} drop-shadow-sm`}></i>}
+                            <span className="text-lg sm:text-2xl font-medium tracking-tight">{weather.temp}°</span>
                         </div>
-                        <div className="w-px h-8 bg-white/20"></div>
-                        <div className="flex items-center gap-3">
-                            <i className="ph-fill ph-wind text-2xl text-blue-200/80"></i>
+                        <div className="w-px h-4 sm:h-5 bg-white/20"></div>
+                        <div className="flex items-center gap-1.5 sm:gap-2">
+                            <i className="ph-fill ph-wind text-sm sm:text-lg text-blue-200/70"></i>
                             <div className="flex flex-col leading-none">
-                                <span className="text-xl font-medium">{weather.wind}</span>
-                                <span className="text-[9px] uppercase font-bold text-white/50 tracking-wider">km/h</span>
+                                <span className="text-xs sm:text-sm font-medium">{weather.wind}</span>
+                                <span className="text-[7px] uppercase font-bold text-white/40 tracking-wider">km/h</span>
                             </div>
                         </div>
                     </div>
                 )}
             </div>
 
-            {/* CLOCK TOP RIGHT */}
-            <div className="absolute top-8 right-10 z-30 text-right pointer-events-none">
-                <div className="text-6xl font-extralight tracking-tight font-mono text-white/90 drop-shadow-xl">
-                    {currentTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                </div>
-                <div className="text-sm font-bold uppercase tracking-widest text-white/40 mt-0">
-                    {currentTime.toLocaleDateString([], {weekday: 'long', day: 'numeric', month: 'short'})}
-                </div>
-            </div>
-
             {/* PROGRESS BAR */}
-            <div className="absolute bottom-0 left-0 h-1 bg-white/5 w-full z-40">
+            <div className={`absolute bottom-0 left-0 h-0.5 bg-white/5 w-full z-40 transition-opacity duration-500 ${!isInitialized ? 'opacity-0' : 'opacity-100'}`}>
                 <div 
-                    className="h-full bg-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.8)] transition-all duration-100 ease-linear"
+                    className="h-full bg-indigo-500/80 shadow-[0_0_10px_rgba(99,102,241,0.5)] transition-all duration-100 ease-linear"
                     style={{ width: `${progress}%` }}
                 ></div>
             </div>
 
             {/* EXIT BUTTON */}
-            <div className={`absolute top-8 left-8 z-50 transition-all duration-500 ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}`}>
+            <div className={`absolute top-4 left-4 sm:top-6 sm:left-6 z-50 transition-all duration-500 ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}`}>
                 <button 
                     onClick={onExit}
-                    className="group flex items-center gap-2 bg-black/40 hover:bg-white hover:text-black text-white border border-white/20 backdrop-blur-xl pl-4 pr-2 py-2 rounded-full transition-all shadow-xl"
+                    className="group flex items-center gap-2 bg-black/40 hover:bg-white hover:text-black text-white border border-white/20 backdrop-blur-xl pl-3 pr-1.5 py-1.5 rounded-full transition-all shadow-xl"
                 >
-                    <span className="text-xs font-bold uppercase tracking-wider">Sortir</span>
-                    <div className="bg-white/20 group-hover:bg-black/10 rounded-full w-6 h-6 flex items-center justify-center">
-                        <i className="ph-bold ph-x text-xs"></i>
+                    <span className="text-[10px] font-bold uppercase tracking-wider">Sortir</span>
+                    <div className="bg-white/20 group-hover:bg-black/10 rounded-full w-5 h-5 flex items-center justify-center">
+                        <i className="ph-bold ph-x text-[10px]"></i>
                     </div>
                 </button>
             </div>
-
-            <style>{`
-                @keyframes kenburnsVideo {
-                    0% { transform: scale(1.02); }
-                    100% { transform: scale(1.10); }
-                }
-            `}</style>
         </div>
     );
 };
