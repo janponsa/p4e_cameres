@@ -4,6 +4,8 @@ import { ALL_WEBCAMS, SNAPSHOT_BASE_URL } from './constants';
 import WebcamCard from './components/WebcamCard';
 import { DetailView } from './components/DetailView';
 import { SortOption, Webcam } from './types';
+import { Soundscape } from './utils/Soundscape';
+import Onboarding from './components/Onboarding';
 
 // URL de l'API de sessions (només per visualitzar número clients)
 const SESSIONS_API_URL = 'https://api.projecte4estacions.com/api/sessions';
@@ -34,6 +36,43 @@ function App() {
   
   // Time state
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDay>('day');
+
+  // Soundscape State
+  const [isAmbientOn, setIsAmbientOn] = useState(false);
+  const [showMixer, setShowMixer] = useState(false); // Global Mixer Toggle
+  const [musicVol, setMusicVol] = useState(0.6);
+  const [sfxVol, setSfxVol] = useState(0.5);
+
+  // Onboarding State
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  // Sync Volume state with Engine on mount & Check Onboarding
+  useEffect(() => {
+      const vols = Soundscape.getVolumes();
+      setMusicVol(vols.music);
+      setSfxVol(vols.sfx);
+
+      // Check LocalStorage for Onboarding
+      const hasSeenOnboarding = localStorage.getItem('p4e_nexus_onboarding_seen');
+      if (!hasSeenOnboarding) {
+          setShowOnboarding(true);
+      }
+  }, []);
+
+  const handleOnboardingComplete = () => {
+      localStorage.setItem('p4e_nexus_onboarding_seen', 'true');
+      setShowOnboarding(false);
+  };
+
+  const handleVolumeChange = (type: 'music' | 'sfx', val: number) => {
+      if (type === 'music') {
+          setMusicVol(val);
+          Soundscape.setMusicVolume(val);
+      } else {
+          setSfxVol(val);
+          Soundscape.setSfxVolume(val);
+      }
+  };
 
   // --- THEME LOGIC START ---
   const getAutomaticTheme = (): ThemeMode => {
@@ -73,15 +112,12 @@ function App() {
       return () => clearInterval(interval);
   }, []);
 
-  // 2. Fetch Sessions & Verify Cameras (LOGICA ACTUALITZADA)
+  // 2. Fetch Sessions & Verify Cameras
   useEffect(() => {
     const fetchAndVerify = async () => {
-        // No posem loading a true cada cop per evitar parpelleig en refrescos
-        // Només la primera vegada o si volem forçar
         if (activeCameraIds.size === 0) setIsSessionLoading(true);
 
         try {
-            // PAS 1: Obtenir Sessions (Clients connectats)
             const response = await fetch(SESSIONS_API_URL);
             if (!response.ok) throw new Error('Error network sessions');
             const data = await response.json();
@@ -90,7 +126,6 @@ function App() {
             const verifiedIds = new Set<string>();
             const promises: Promise<void>[] = [];
 
-            // Data d'avui per comprovar timelapses YYYY-MM-DD
             const now = new Date();
             const year = now.getFullYear();
             const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -98,64 +133,46 @@ function App() {
             const todayStr = `${year}-${month}-${day}`;
 
             ALL_WEBCAMS.forEach(cam => {
-                // PRIORITAT 1: Està a API Sessions? (Té espectadors) -> ONLINE
                 if (Object.prototype.hasOwnProperty.call(data, cam.id)) {
                     verifiedIds.add(cam.id);
                 } else {
-                    // PRIORITAT 2: Comprovar Timelapse (Per les que tenen 0 espectadors)
-                    // Mirem si l'última imatge generada és recent (< 10 minuts)
                     const p = fetch(`${TIMELAPSE_API_BASE}${cam.id}/dates`)
                         .then(r => {
                             if(!r.ok) return [];
                             return r.json();
                         })
                         .then(async (dates: string[]) => {
-                            // Si hi ha dates i la primera és AVUI
                             if (Array.isArray(dates) && dates.length > 0 && dates[0] === todayStr) {
-                                // Descarreguem llista imatges d'avui
                                 const imgRes = await fetch(`${TIMELAPSE_API_BASE}${cam.id}/${todayStr}/images`);
                                 if(!imgRes.ok) return;
                                 const images = await imgRes.json();
                                 
                                 if (Array.isArray(images) && images.length > 0) {
-                                    // Agafem l'última: image-2025-11-28_12-48-07.jpg
                                     const lastImage = images[images.length - 1];
                                     try {
-                                        // Extraiem hora del nom de l'arxiu
-                                        // Format habitual: image-YYYY-MM-DD_HH-MM-SS.jpg
-                                        // A vegades: id_YYYY...
                                         const parts = lastImage.replace('.jpg', '').split('_');
-                                        const timePart = parts.length > 1 ? parts[1] : null; // HH-MM-SS
+                                        const timePart = parts.length > 1 ? parts[1] : null; 
                                         
                                         if (timePart) {
                                             const [h, m, s] = timePart.split('-').map(Number);
-                                            
-                                            // Creem data de la imatge (assumint avui)
                                             const imgDate = new Date();
                                             imgDate.setHours(h, m, s, 0);
-                                            
                                             const diffMs = Date.now() - imgDate.getTime();
                                             const TEN_MINUTES = 10 * 60 * 1000; 
 
-                                            // Comprovem si fa menys de 10 minuts
-                                            // (Acceptem una mica de marge negatiu per diferències de rellotge servidor/client)
                                             if (diffMs < TEN_MINUTES && diffMs > -(TEN_MINUTES)) {
                                                 verifiedIds.add(cam.id);
                                             }
                                         }
-                                    } catch (e) {
-                                        // Error parsejant, ignorem
-                                    }
+                                    } catch (e) {}
                                 }
                             }
                         })
-                        .catch(() => { /* Silent fail, offline */ });
-                    
+                        .catch(() => { });
                     promises.push(p);
                 }
             });
 
-            // Esperem que acabin totes les comprovacions de timelapses
             await Promise.all(promises);
             setActiveCameraIds(verifiedIds);
 
@@ -167,7 +184,6 @@ function App() {
     };
 
     fetchAndVerify();
-    // Refrescar cada 10 minuts per no saturar
     const interval = setInterval(fetchAndVerify, 600000); 
     return () => clearInterval(interval);
   }, []);
@@ -178,7 +194,7 @@ function App() {
     if (saved) setFavorites(JSON.parse(saved));
   }, []);
 
-  // 4. Merge Data (Only Verified Cams)
+  // 4. Merge Data
   const displayWebcams = useMemo(() => {
     return ALL_WEBCAMS
         .filter(cam => activeCameraIds.has(cam.id))
@@ -188,9 +204,8 @@ function App() {
         }));
   }, [activeCameraIds, sessionData]);
 
-  // 5. Background Image Logic (Static per session)
+  // 5. Background Image Logic
   useEffect(() => {
-      // WAIT for session loading to finish to ensure we have the full list of cameras before picking one
       if (themeMode !== 'image' || isSessionLoading || displayWebcams.length === 0) return;
 
       setBgImage(current => {
@@ -202,6 +217,43 @@ function App() {
           return '';
       });
   }, [themeMode, displayWebcams, isSessionLoading]);
+
+  // 6. Soundscape Logic
+  const toggleAmbientSound = () => {
+      if (isAmbientOn) {
+          Soundscape.pause();
+          setIsAmbientOn(false);
+      } else {
+          Soundscape.play();
+          setIsAmbientOn(true);
+      }
+  };
+
+  // 7. Global Weather Logic
+  useEffect(() => {
+      if (!selectedWebcamId && isAmbientOn && !isSessionLoading) {
+          const centerLat = 42.1;
+          const centerLng = 1.8;
+          
+          fetch(`https://api.open-meteo.com/v1/forecast?latitude=${centerLat}&longitude=${centerLng}&current=weather_code,wind_speed_10m,is_day`)
+            .then(res => res.json())
+            .then(data => {
+                if(data.current) {
+                     const globalWeather = {
+                         temp: "15",
+                         humidity: 50,
+                         wind: data.current.wind_speed_10m,
+                         rain: 0,
+                         code: data.current.weather_code,
+                         isDay: data.current.is_day === 1,
+                         isReal: false
+                     };
+                     Soundscape.updateContext(globalWeather, "Panoràmica general de Catalunya. Paisatge divers, muntanya i vall.");
+                }
+            })
+            .catch(() => {});
+      }
+  }, [selectedWebcamId, isAmbientOn, isSessionLoading]);
 
   const saveFavorites = (newFavs: string[]) => {
     setFavorites(newFavs);
@@ -252,6 +304,14 @@ function App() {
   const bgPanel = isDarkMode ? 'bg-black/40 border-white/10' : 'bg-white/60 border-white/40 shadow-xl';
   const hoverBg = isDarkMode ? 'hover:bg-white/10' : 'hover:bg-black/5';
   const sidebarBg = isDarkMode ? 'bg-black/60 border-r border-white/10' : 'bg-white/70 border-r border-gray-200';
+  
+  // Specific styles for controls to ensure readability in image mode
+  const controlBg = isDarkMode ? 'bg-black/40 border-white/20 text-white' : 'bg-white/80 border-gray-200 text-gray-800';
+  const controlHover = isDarkMode ? 'hover:bg-black/60' : 'hover:bg-white';
+  
+  // Compact mobile button styles
+  const mobileBtnClass = `p-1.5 rounded-lg transition-colors backdrop-blur-md ${isDarkMode ? 'text-white bg-black/20' : 'text-gray-800 bg-white/40'}`;
+  const mobileBtnActive = isDarkMode ? 'bg-indigo-500/30 text-indigo-300 ring-1 ring-indigo-500/50' : 'bg-indigo-100 text-indigo-700 ring-1 ring-indigo-200';
 
   const handleRegionChange = (region: string) => {
       setFilterRegion(region);
@@ -262,6 +322,8 @@ function App() {
   return (
     <div className={`flex h-screen overflow-hidden font-sans transition-colors duration-500 relative bg-gray-900`}>
       
+      {showOnboarding && <Onboarding onComplete={handleOnboardingComplete} />}
+
       {/* --- BACKGROUND LAYER --- */}
       <div className={`absolute inset-0 z-0 overflow-hidden transition-colors duration-700
           ${themeMode === 'light' ? 'bg-[#f0f2f5]' : ''}
@@ -348,7 +410,7 @@ function App() {
                     className={`h-5 sm:h-6 shrink-0 ${themeMode !== 'light' && 'brightness-0 invert'}`} 
                 />
 
-                {/* SEARCH & MOBILE VIEW TOGGLE */}
+                {/* SEARCH */}
                 <div className="flex items-center gap-2 flex-1 max-w-xs ml-auto lg:ml-4">
                     <div className="relative group w-full transition-all duration-300">
                         <i className={`ph-bold ph-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 transition-colors text-xs sm:text-sm ${textSecondary}`}></i>
@@ -364,30 +426,81 @@ function App() {
                                 }`}
                         />
                     </div>
-                    
-                    {/* MOBILE VIEW TOGGLE BUTTON (Hidden on Desktop) */}
-                    {!selectedWebcamId && (
-                        <button 
-                            onClick={() => setMobileViewMode(prev => prev === 'list' ? 'grid' : 'list')}
-                            className={`lg:hidden p-2 rounded-full backdrop-blur-md border transition-all ${bgPanel} ${textPrimary} shadow-sm active:scale-95`}
-                            title={mobileViewMode === 'list' ? "Veure com a graella" : "Veure com a llista"}
-                        >
-                            <i className={`ph-bold text-lg ${mobileViewMode === 'list' ? 'ph-squares-four' : 'ph-list'}`}></i>
-                        </button>
-                    )}
                 </div>
             </div>
 
-            <div className="hidden lg:flex items-center gap-2">
+            {/* DESKTOP CONTROLS */}
+            <div className="hidden lg:flex items-center gap-3">
+               
+               {/* MIXER BUTTON DESKTOP */}
+                <div className="relative">
+                    <button
+                        onClick={() => setShowMixer(!showMixer)}
+                        className={`p-2 rounded-full transition-colors backdrop-blur-md border ${controlBg} ${controlHover}`}
+                        title="Mesclador d'àudio"
+                    >
+                        <i className="ph-bold ph-faders text-lg"></i>
+                    </button>
+                    
+                    {/* MIXER DROPDOWN */}
+                    {showMixer && (
+                        <div className={`absolute top-full right-0 mt-2 w-48 p-4 rounded-xl shadow-2xl z-50 border backdrop-blur-xl ${isDarkMode ? 'bg-slate-900/90 border-slate-700 text-white' : 'bg-white/90 border-gray-200 text-gray-900'}`}>
+                            <div className="flex flex-col gap-4">
+                                <div className="space-y-1">
+                                    <div className="flex justify-between text-xs font-bold uppercase tracking-wider opacity-70">
+                                        <span>Música (IA)</span>
+                                        <span>{Math.round(musicVol * 100)}%</span>
+                                    </div>
+                                    <input 
+                                        type="range" min="0" max="1" step="0.01" 
+                                        value={musicVol}
+                                        onChange={(e) => handleVolumeChange('music', parseFloat(e.target.value))}
+                                        className="w-full h-1 bg-gray-500/30 rounded-full appearance-none cursor-pointer accent-indigo-500"
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <div className="flex justify-between text-xs font-bold uppercase tracking-wider opacity-70">
+                                        <span>Realitat (FX)</span>
+                                        <span>{Math.round(sfxVol * 100)}%</span>
+                                    </div>
+                                    <input 
+                                        type="range" min="0" max="1" step="0.01" 
+                                        value={sfxVol}
+                                        onChange={(e) => handleVolumeChange('sfx', parseFloat(e.target.value))}
+                                        className="w-full h-1 bg-gray-500/30 rounded-full appearance-none cursor-pointer accent-emerald-500"
+                                    />
+                                </div>
+                            </div>
+                            <div className="fixed inset-0 z-[-1]" onClick={() => setShowMixer(false)}></div>
+                        </div>
+                    )}
+                </div>
+
+               {/* SOUNDSCAPE TOGGLE */}
+               <button 
+                 onClick={toggleAmbientSound}
+                 className={`flex items-center gap-2 px-3 py-1.5 rounded-full border transition-all duration-300 group backdrop-blur-md ${
+                     isAmbientOn 
+                     ? (isDarkMode ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'bg-indigo-100 border-indigo-200 text-indigo-700')
+                     : (isDarkMode ? 'bg-black/30 border-white/20 text-white/50 hover:text-white' : 'bg-white/60 border-gray-200 text-gray-500 hover:text-gray-900')
+                 }`}
+               >
+                   <div className="relative flex items-center justify-center">
+                        <i className={`ph-bold ${isAmbientOn ? 'ph-wave-sine' : 'ph-wave-sine'} text-lg ${!isAmbientOn && 'opacity-50'}`}></i>
+                        {isAmbientOn && (
+                            <span className="absolute -inset-1 rounded-full bg-current opacity-20 animate-ping"></span>
+                        )}
+                   </div>
+                   <span className="text-xs font-bold uppercase tracking-wider hidden xl:inline">
+                       {isAmbientOn ? 'Atmosfera' : 'Silenci'}
+                   </span>
+               </button>
+
                <div className="relative">
                  <select 
                     value={sortBy}
                     onChange={(e) => setSortBy(e.target.value as SortOption)}
-                    className={`appearance-none border text-xs font-medium rounded-full py-2 pl-4 pr-8 focus:outline-none focus:ring-1 backdrop-blur-md cursor-pointer transition-all
-                        ${isDarkMode 
-                            ? 'bg-black/20 border-white/10 text-white hover:bg-black/40 focus:ring-white/20' 
-                            : 'bg-white/60 border-gray-200 text-gray-900 hover:bg-white focus:ring-blue-500/30'
-                        }`}
+                    className={`appearance-none border text-xs font-medium rounded-full py-2 pl-4 pr-8 focus:outline-none focus:ring-1 backdrop-blur-md cursor-pointer transition-all ${controlBg} ${controlHover}`}
                   >
                     <option value="altitude_desc">Alçada</option>
                     <option value="viewers">Popularitat</option>
@@ -399,7 +512,6 @@ function App() {
         </header>
 
         {/* Content Area */}
-        {/* CHANGED: px-3 for mobile padding */}
         <div className="flex-1 overflow-y-auto px-3 sm:px-4 lg:px-8 pb-20 lg:pb-8 custom-scrollbar scroll-smooth w-full">
           
           {selectedWebcam ? (
@@ -420,17 +532,81 @@ function App() {
                     </h1>
                  </div>
                  
-                 {/* Mobile Sort Selector */}
-                 <div className="lg:hidden">
-                    <select 
-                      value={sortBy}
-                      onChange={(e) => setSortBy(e.target.value as SortOption)}
-                      className={`border text-xs rounded-lg py-1.5 px-3 backdrop-blur-md ${isDarkMode ? 'bg-black/20 border-white/10 text-white' : 'bg-white/60 border-gray-200 text-gray-900'}`}
+                 <div className="flex items-center gap-1.5 lg:hidden">
+                    {/* MOBILE SOUND CONTROLS (Moved here, simplified) */}
+                    <div className="flex items-center gap-1 mr-1.5 border-r pr-1.5 border-gray-500/10">
+                         {/* Mixer Button Mobile */}
+                         <div className="relative">
+                             <button
+                                onClick={() => setShowMixer(!showMixer)}
+                                className={mobileBtnClass}
+                            >
+                                <i className="ph-bold ph-faders text-lg"></i>
+                            </button>
+                             {showMixer && (
+                                <div className={`absolute top-full right-0 mt-2 w-48 p-4 rounded-xl shadow-2xl z-50 border backdrop-blur-xl ${isDarkMode ? 'bg-slate-900/95 border-slate-700 text-white' : 'bg-white/95 border-gray-200 text-gray-900'}`}>
+                                    <div className="flex flex-col gap-4">
+                                        <div className="space-y-1">
+                                            <div className="flex justify-between text-xs font-bold uppercase tracking-wider opacity-70">
+                                                <span>Música</span>
+                                                <span>{Math.round(musicVol * 100)}%</span>
+                                            </div>
+                                            <input 
+                                                type="range" min="0" max="1" step="0.01" 
+                                                value={musicVol}
+                                                onChange={(e) => handleVolumeChange('music', parseFloat(e.target.value))}
+                                                className="w-full h-1 bg-gray-500/30 rounded-full appearance-none cursor-pointer accent-indigo-500"
+                                            />
+                                        </div>
+                                        <div className="space-y-1">
+                                            <div className="flex justify-between text-xs font-bold uppercase tracking-wider opacity-70">
+                                                <span>Realitat</span>
+                                                <span>{Math.round(sfxVol * 100)}%</span>
+                                            </div>
+                                            <input 
+                                                type="range" min="0" max="1" step="0.01" 
+                                                value={sfxVol}
+                                                onChange={(e) => handleVolumeChange('sfx', parseFloat(e.target.value))}
+                                                className="w-full h-1 bg-gray-500/30 rounded-full appearance-none cursor-pointer accent-emerald-500"
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="fixed inset-0 z-[-1]" onClick={() => setShowMixer(false)}></div>
+                                </div>
+                            )}
+                         </div>
+
+                         {/* Sound Toggle Mobile */}
+                         <button 
+                            onClick={toggleAmbientSound}
+                            className={`${mobileBtnClass} ${isAmbientOn ? mobileBtnActive : ''}`}
+                         >
+                            <i className={`ph-bold ${isAmbientOn ? 'ph-wave-sine' : 'ph-wave-sine'} text-lg ${!isAmbientOn && 'opacity-40'}`}></i>
+                         </button>
+                    </div>
+
+                    {/* VIEW TOGGLE BUTTON (Mobile Only) */}
+                    <button 
+                        onClick={() => setMobileViewMode(prev => prev === 'list' ? 'grid' : 'list')}
+                        className={mobileBtnClass}
+                        title={mobileViewMode === 'list' ? "Veure com a graella" : "Veure com a llista"}
                     >
-                      <option value="altitude_desc">Alçada</option>
-                      <option value="viewers">Popularitat</option>
-                      <option value="name">Nom</option>
-                    </select>
+                        <i className={`ph-bold text-lg ${mobileViewMode === 'list' ? 'ph-squares-four' : 'ph-list'}`}></i>
+                    </button>
+
+                    {/* Mobile Sort Selector */}
+                    <div className="relative">
+                        <select 
+                          value={sortBy}
+                          onChange={(e) => setSortBy(e.target.value as SortOption)}
+                          className={`appearance-none text-[11px] font-medium rounded-lg py-1.5 pl-2 pr-6 border-0 backdrop-blur-md ${isDarkMode ? 'bg-black/20 text-white' : 'bg-white/40 text-gray-800'}`}
+                        >
+                          <option value="altitude_desc">Alçada</option>
+                          <option value="viewers">Popularitat</option>
+                          <option value="name">Nom</option>
+                        </select>
+                        <i className={`ph-bold ph-caret-down absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none text-[9px] opacity-60`}></i>
+                    </div>
                  </div>
               </div>
 
