@@ -60,6 +60,8 @@ function App() {
   }, []);
 
   const handleOnboardingComplete = () => {
+      // UNLOCK IOS AUDIO ON USER INTERACTION
+      Soundscape.prepare(); 
       localStorage.setItem('p4e_nexus_onboarding_seen', 'true');
       setShowOnboarding(false);
   };
@@ -486,7 +488,7 @@ function App() {
                  }`}
                >
                    <div className="relative flex items-center justify-center">
-                        <i className={`ph-bold ${isAmbientOn ? 'ph-wave-sine' : 'ph-wave-sine'} text-lg ${!isAmbientOn && 'opacity-50'}`}></i>
+                        <i className={`ph-bold ph-wave-sine text-lg ${!isAmbientOn && 'opacity-50'}`}></i>
                         {isAmbientOn && (
                             <span className="absolute -inset-1 rounded-full bg-current opacity-20 animate-ping"></span>
                         )}
@@ -581,7 +583,7 @@ function App() {
                             onClick={toggleAmbientSound}
                             className={`${mobileBtnClass} ${isAmbientOn ? mobileBtnActive : ''}`}
                          >
-                            <i className={`ph-bold ${isAmbientOn ? 'ph-wave-sine' : 'ph-wave-sine'} text-lg ${!isAmbientOn && 'opacity-40'}`}></i>
+                            <i className={`ph-bold ph-wave-sine text-lg ${!isAmbientOn && 'opacity-40'}`}></i>
                          </button>
                     </div>
 
