@@ -91,7 +91,7 @@ class SoundscapeEngine {
      * PREPARE: Cridar OBLIGATÒRIAMENT en un 'click' event.
      */
     public async prepare() {
-        console.log("[Soundscape] Preparing Audio Context...");
+        console.log("[Soundscape] Preparing Audio Context..."); // <--- AQUEST ÉS EL LOG QUE ET FALTA
         
         // 1. Inicialitzar AudioContext
         if (!this.ctx) {
