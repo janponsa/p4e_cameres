@@ -50,7 +50,10 @@ async function decodeAudioData(
 // --- CONFIGURACIÓ LYRIA ---
 
 const LYRIA_MODEL = 'lyria-realtime-exp';
-const LYRIA_SAMPLE_RATE = 48000; // Freqüència de la IA (no del dispositiu)
+const LYRIA_SAMPLE_RATE = 48000; // Freqüència de la IA
+
+// Tiny silent MP3 to unlock iOS audio session
+const SILENT_MP3 = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//////////////////////////////////////////////////////////////////wAAAP//OEAAAAAAAAAAAAAAAAAAAAAAAMqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//OEAAAAAAAAAAAAAAAAAAAAAAABiqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 
 class SoundscapeEngine {
     private ai: GoogleGenAI;
@@ -58,9 +61,9 @@ class SoundscapeEngine {
     private ctx: AudioContext | null = null;
     
     // --- BUSOS DE MESCLA ---
-    private masterGain: GainNode | null = null; // Volum General (Fade in/out)
-    private musicBus: GainNode | null = null;   // Volum Música IA
-    private sfxBus: GainNode | null = null;     // Volum Efectes Meteo
+    private masterGain: GainNode | null = null; 
+    private musicBus: GainNode | null = null;   
+    private sfxBus: GainNode | null = null;     
     
     // --- WEATHER FX LAYERS ---
     private windNode: AudioBufferSourceNode | null = null;
@@ -84,203 +87,246 @@ class SoundscapeEngine {
     private musicVolume: number = 0.6;
     private sfxVolume: number = 0.5;
 
+    // Estat connexió
+    private isConnecting: boolean = false;
+    private reconnectTimer: any = null;
+
     constructor() {
-        this.ai = new GoogleGenAI({
-            apiKey: process.env.API_KEY,
-            apiVersion: 'v1alpha'
-        });
+        this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     }
 
-    private initAudio() {
+    /**
+     * Prepare AudioContext (iOS Unlock)
+     * Has de cridar això al primer clic de l'usuari (ex: botó Entrar)
+     */
+    public prepare() {
         if (!this.ctx) {
-            const AC = window.AudioContext || (window as any).webkitAudioContext;
-            // FIX iOS: No forcem sampleRate al constructor, deixem que l'iPhone decideixi (sol ser 44.1k o 48k)
-            this.ctx = new AC();
-            
-            // Crear nodes de guany (Busos)
-            this.masterGain = this.ctx.createGain();
-            this.musicBus = this.ctx.createGain();
-            this.sfxBus = this.ctx.createGain();
-
-            // Connectar: Source -> Bus -> Master -> Destination
-            this.masterGain.connect(this.ctx.destination);
-            this.musicBus.connect(this.masterGain);
-            this.sfxBus.connect(this.masterGain);
-
-            // Valors inicials
-            this.masterGain.gain.value = 0; // Comencem en silenci per fer fade-in
-            this.musicBus.gain.value = this.musicVolume;
-            this.sfxBus.gain.value = this.sfxVolume;
-
-            // FIX iOS: Unlock strategy
-            this.unlockMobileAudio();
-
-            // INICIALITZAR CAPES METEOROLÒGIQUES (SFX)
-            this.initWeatherLayers();
+            // No forcem sampleRate, deixem que el dispositiu decideixi per evitar glitches en iOS
+            this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            this.setupMixer();
         }
-    }
-
-    // FIX iOS: Reprodueix un buffer silenciós per desbloquejar l'AudioContext a Safari
-    private unlockMobileAudio() {
-        if (!this.ctx) return;
-        const buffer = this.ctx.createBuffer(1, 1, 22050);
-        const source = this.ctx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(this.ctx.destination);
-        source.start(0);
 
         if (this.ctx.state === 'suspended') {
             this.ctx.resume();
         }
+
+        // Play Silent MP3 to force iOS into "Playback" mode
+        const audio = new Audio(SILENT_MP3);
+        audio.play().catch(() => {});
     }
 
-    private initWeatherLayers() {
-        if (!this.ctx || !this.sfxBus) return;
+    private setupMixer() {
+        if (!this.ctx) return;
         
-        // 1. GENERAR BUFFER DE SOROLL ROSA (PINK NOISE)
-        const bufferSize = this.ctx.sampleRate * 5;
-        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-        const data = buffer.getChannelData(0);
-        let b0=0, b1=0, b2=0, b3=0, b4=0, b5=0, b6=0;
-        
-        for (let i = 0; i < bufferSize; i++) {
-            const white = Math.random() * 2 - 1;
-            b0 = 0.99886 * b0 + white * 0.0555179;
-            b1 = 0.99332 * b1 + white * 0.0750759;
-            b2 = 0.96900 * b2 + white * 0.1538520;
-            b3 = 0.86650 * b3 + white * 0.3104856;
-            b4 = 0.55000 * b4 + white * 0.5329522;
-            b5 = -0.7616 * b5 - white * 0.0168980;
-            data[i] = (b0 + b1 + b2 + b3 + b4 + b5 + white * 0.5362) * 0.11;
-        }
+        // Master
+        this.masterGain = this.ctx.createGain();
+        this.masterGain.gain.value = 1.0;
+        this.masterGain.connect(this.ctx.destination);
 
-        // 2. CONFIGURAR CANAL DE VENT
-        this.windFilter = this.ctx.createBiquadFilter();
-        this.windFilter.type = 'lowpass';
-        this.windFilter.frequency.value = 200; 
-        
-        this.windGain = this.ctx.createGain();
-        this.windGain.gain.value = 0;
+        // Music Bus
+        this.musicBus = this.ctx.createGain();
+        this.musicBus.gain.value = this.musicVolume;
+        this.musicBus.connect(this.masterGain);
 
-        this.windNode = this.ctx.createBufferSource();
-        this.windNode.buffer = buffer;
-        this.windNode.loop = true;
-        
-        this.windNode.connect(this.windFilter);
-        this.windFilter.connect(this.windGain);
-        this.windGain.connect(this.sfxBus); // Connectem al bus d'efectes
-        this.windNode.start();
-
-        // 3. CONFIGURAR CANAL DE PLUJA
-        this.rainFilter = this.ctx.createBiquadFilter();
-        this.rainFilter.type = 'lowpass';
-        this.rainFilter.frequency.value = 800;
-        
-        this.rainGain = this.ctx.createGain();
-        this.rainGain.gain.value = 0;
-
-        this.rainNode = this.ctx.createBufferSource();
-        this.rainNode.buffer = buffer;
-        this.rainNode.loop = true;
-
-        this.rainNode.connect(this.rainFilter);
-        this.rainFilter.connect(this.rainGain);
-        this.rainGain.connect(this.sfxBus); // Connectem al bus d'efectes
-        this.rainNode.start();
+        // SFX Bus
+        this.sfxBus = this.ctx.createGain();
+        this.sfxBus.gain.value = this.sfxVolume;
+        this.sfxBus.connect(this.masterGain);
     }
 
-    private updateWeatherSFX(weather: WeatherData) {
-        if (!this.ctx || !this.windGain || !this.rainGain || !this.windFilter) return;
-        const now = this.ctx.currentTime;
-
-        // --- LÒGICA VENT ---
-        let targetWindGain = 0;
-        let targetWindFreq = 150;
-        
-        // El vent comença a sonar a partir de 5km/h
-        if (weather.wind > 5) {
-            const windFactor = Math.min((weather.wind - 5) / 80, 1); 
-            targetWindGain = 0.05 + (windFactor * 0.4); // Max 0.45 gain
-            targetWindFreq = 100 + (windFactor * 500); // Freqüència puja amb velocitat (xiulit)
-        }
-        
-        // --- LÒGICA PLUJA ---
-        // Prioritzem el codi WMO per saber si plou ACTUALMENT
-        // Codis pluja: 51-67, 80-82. Tempesta: 95-99. Neu: 71-77
-        let targetRainGain = 0;
-        let isRainingCurrent = false;
-
-        if (weather.code !== undefined) {
-             if ((weather.code >= 51 && weather.code <= 67) || (weather.code >= 80 && weather.code <= 99)) {
-                 isRainingCurrent = true;
-             }
-        } else if (weather.rain > 1.0) {
-            // Fallback si no tenim codi però hi ha acumulació significativa
-            isRainingCurrent = true;
-        }
-        
-        if (isRainingCurrent) {
-            targetRainGain = 0.15; // Pluja base
-            if (weather.wind > 30 || (weather.code && weather.code >= 95)) {
-                targetRainGain = 0.35; // Tempesta
-            }
-        }
-
-        // Transicions suaus de 3 segons
-        this.windGain.gain.setTargetAtTime(targetWindGain, now, 3);
-        this.windFilter.frequency.setTargetAtTime(targetWindFreq, now, 3);
-        this.rainGain.gain.setTargetAtTime(targetRainGain, now, 3);
-    }
-
-    // --- CONTROLS DE VOLUM USUARI ---
-    
-    public setMusicVolume(val: number) {
-        this.musicVolume = Math.max(0, Math.min(1, val));
-        if (this.musicBus && this.ctx) {
-            this.musicBus.gain.setTargetAtTime(this.musicVolume, this.ctx.currentTime, 0.1);
-        }
-    }
-
-    public setSfxVolume(val: number) {
-        this.sfxVolume = Math.max(0, Math.min(1, val));
-        if (this.sfxBus && this.ctx) {
-            this.sfxBus.gain.setTargetAtTime(this.sfxVolume, this.ctx.currentTime, 0.1);
-        }
-    }
-    
     public getVolumes() {
         return { music: this.musicVolume, sfx: this.sfxVolume };
     }
 
-    public async play() {
-        if (this.isPlaying) return;
-        
-        this.initAudio();
-        
-        // FIX iOS: Force resume on play interaction
-        if (this.ctx && this.ctx.state === 'suspended') {
-            await this.ctx.resume();
+    public setMusicVolume(val: number) {
+        this.musicVolume = val;
+        if (this.musicBus && this.ctx) {
+            this.musicBus.gain.setTargetAtTime(val, this.ctx.currentTime, 0.1);
         }
+    }
 
-        // Fade In suau MASTER
-        if (this.masterGain && this.ctx) {
-            this.masterGain.gain.cancelScheduledValues(this.ctx.currentTime);
-            this.masterGain.gain.setValueAtTime(0, this.ctx.currentTime);
-            this.masterGain.gain.linearRampToValueAtTime(0.8, this.ctx.currentTime + 2);
+    public setSfxVolume(val: number) {
+        this.sfxVolume = val;
+        if (this.sfxBus && this.ctx) {
+            this.sfxBus.gain.setTargetAtTime(val, this.ctx.currentTime, 0.1);
         }
+    }
 
-        this.isPlaying = true;
-        console.log("🎵 Soundscape: Iniciant motor d'àudio + Weather FX...");
+    // --- LYRIA CONNECTION ---
+
+    private async connectLyria() {
+        if (this.isConnecting || this.session) return;
+        this.isConnecting = true;
 
         try {
-            if (!this.session) {
-                await this.connectSession();
-            } else {
-                this.session.play();
-            }
+            console.log("[Soundscape] Connecting to Lyria...");
+            this.session = await this.ai.live.music.connect({
+                model: LYRIA_MODEL,
+                callbacks: {
+                    onmessage: async (msg: any) => {
+                        if (msg.setupComplete) {
+                            console.log("[Soundscape] Session Ready");
+                            this.isConnecting = false;
+                            this.session.play(); // IMPORTANT!
+                            this.sendPrompts();
+                        }
+                        if (msg.serverContent?.audioChunks?.[0]?.data && this.ctx && this.musicBus) {
+                            const chunk = msg.serverContent.audioChunks[0];
+                            const audioBuffer = await decodeAudioData(
+                                decode(chunk.data),
+                                this.ctx,
+                                LYRIA_SAMPLE_RATE,
+                                2
+                            );
+                            this.scheduleChunk(audioBuffer);
+                        }
+                    },
+                    onerror: (e: any) => {
+                        console.warn("[Soundscape] Error:", e);
+                        this.triggerReconnection();
+                    },
+                    onclose: (e: any) => {
+                        console.log("[Soundscape] Closed:", e);
+                        this.session = null;
+                        this.triggerReconnection();
+                    }
+                }
+            });
         } catch (e) {
-            console.error("❌ Error connectant a Lyria:", e);
-            this.isPlaying = false;
+            console.error("[Soundscape] Connection failed", e);
+            this.isConnecting = false;
+            this.triggerReconnection();
+        }
+    }
+
+    private triggerReconnection() {
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        if (!this.isPlaying) return; // Don't reconnect if paused by user
+
+        this.reconnectTimer = setTimeout(() => {
+            console.log("[Soundscape] Attempting auto-reconnect...");
+            this.session = null;
+            this.connectLyria();
+        }, 2000);
+    }
+
+    private scheduleChunk(buffer: AudioBuffer) {
+        if (!this.ctx || !this.musicBus) return;
+        
+        const source = this.ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(this.musicBus);
+
+        const now = this.ctx.currentTime;
+        if (this.nextStartTime < now) this.nextStartTime = now + this.bufferTime;
+        
+        source.start(this.nextStartTime);
+        this.nextStartTime += buffer.duration;
+    }
+
+    // --- PROCEDURAL WEATHER FX (Brown/Pink Noise) ---
+
+    private createNoiseBuffer(): AudioBuffer | null {
+        if (!this.ctx) return null;
+        const bufferSize = this.ctx.sampleRate * 4; // 4 seconds loop
+        const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+            data[i] = (Math.random() * 2 - 1);
+        }
+        return buffer;
+    }
+
+    private startWindEngine(windSpeed: number) {
+        if (!this.ctx || !this.sfxBus || this.windNode) return;
+
+        const noise = this.createNoiseBuffer();
+        if (!noise) return;
+
+        this.windNode = this.ctx.createBufferSource();
+        this.windNode.buffer = noise;
+        this.windNode.loop = true;
+
+        this.windFilter = this.ctx.createBiquadFilter();
+        this.windFilter.type = 'lowpass';
+        this.windFilter.Q.value = 1;
+        
+        this.windGain = this.ctx.createGain();
+        this.windGain.gain.value = 0;
+
+        this.windNode.connect(this.windFilter);
+        this.windFilter.connect(this.windGain);
+        this.windGain.connect(this.sfxBus);
+
+        this.windNode.start();
+        this.updateWindParams(windSpeed);
+    }
+
+    private updateWindParams(kmh: number) {
+        if (!this.ctx || !this.windFilter || !this.windGain) return;
+        
+        const t = this.ctx.currentTime;
+        
+        // Map Wind 0-100kmh to Filter Freq 100-800Hz
+        const freq = Math.max(100, Math.min(800, 100 + (kmh * 7)));
+        // Map Wind to Volume 0-0.6
+        const vol = Math.max(0, Math.min(0.6, kmh / 120));
+
+        this.windFilter.frequency.setTargetAtTime(freq, t, 2);
+        this.windGain.gain.setTargetAtTime(vol, t, 2);
+    }
+
+    private startRainEngine(isRaining: boolean, intensity: number) {
+        if (!this.ctx || !this.sfxBus) return;
+
+        // Create if missing
+        if (!this.rainNode) {
+            const noise = this.createNoiseBuffer();
+            if (!noise) return;
+            
+            this.rainNode = this.ctx.createBufferSource();
+            this.rainNode.buffer = noise;
+            this.rainNode.loop = true;
+
+            this.rainFilter = this.ctx.createBiquadFilter();
+            this.rainFilter.type = 'lowpass';
+            this.rainFilter.frequency.value = 800; // Muffled rain
+
+            this.rainGain = this.ctx.createGain();
+            this.rainGain.gain.value = 0;
+
+            this.rainNode.connect(this.rainFilter);
+            this.rainFilter.connect(this.rainGain);
+            this.rainGain.connect(this.sfxBus);
+            this.rainNode.start();
+        }
+
+        const t = this.ctx.currentTime;
+        const targetVol = isRaining ? Math.min(0.5, 0.1 + (intensity / 10)) : 0;
+        this.rainGain?.gain.setTargetAtTime(targetVol, t, 2);
+    }
+
+
+    // --- MAIN CONTROL ---
+
+    public play() {
+        this.prepare(); // Ensure ctx is ready
+        this.isPlaying = true;
+
+        // Connect Lyria
+        if (!this.session) {
+            this.connectLyria();
+        } else {
+            this.session.play();
+        }
+
+        // Start FX Engines
+        if (!this.windNode) this.startWindEngine(10);
+        if (!this.rainNode) this.startRainEngine(false, 0);
+
+        // Fade In Master
+        if (this.ctx && this.masterGain) {
+            this.masterGain.gain.setTargetAtTime(1, this.ctx.currentTime, 1);
         }
     }
 
@@ -288,188 +334,99 @@ class SoundscapeEngine {
         this.isPlaying = false;
         
         // Fade Out Master
-        if (this.masterGain && this.ctx) {
-             const now = this.ctx.currentTime;
-             this.masterGain.gain.cancelScheduledValues(now);
-             this.masterGain.gain.setValueAtTime(this.masterGain.gain.value, now);
-             this.masterGain.gain.linearRampToValueAtTime(0, now + 1.5);
-             
-             setTimeout(() => {
-                 if (!this.isPlaying && this.session) {
-                     this.session.pause();
-                     if (this.ctx && this.ctx.state === 'running') this.ctx.suspend();
-                     console.log("⏸️ Soundscape pausat.");
-                 }
-             }, 1600);
-        } else {
-            if (this.session) this.session.pause();
-        }
-    }
-
-    private async connectSession() {
-        if (this.session) return;
-
-        this.session = await this.ai.live.music.connect({
-            model: LYRIA_MODEL,
-            callbacks: {
-                onmessage: async (msg: any) => {
-                    
-                    if (msg.setupComplete) {
-                        console.log("✅ Sessió Generativa Activa.");
-                        
-                        await this.session.setMusicGenerationConfig({
-                            musicGenerationConfig: {
-                                temperature: 1.0, 
-                                topK: 40,
-                                guidance: 3.0 // Menys "musical", més ambiental
-                            }
-                        });
-
-                        this.sendPrompts();
-                        
-                        if (this.isPlaying) {
-                            this.session.play();
-                        }
-                    }
-
-                    if (msg.serverContent?.audioChunks?.[0]?.data) {
-                        if (!this.isPlaying || !this.ctx || !this.musicBus) return;
-
-                        const rawData = msg.serverContent.audioChunks[0].data;
-                        const audioBuffer = await decodeAudioData(
-                            decode(rawData),
-                            this.ctx,
-                            LYRIA_SAMPLE_RATE, // Mantingut el sample rate de la IA
-                            2
-                        );
-
-                        this.scheduleBuffer(audioBuffer);
-                    }
-                },
-                onerror: (err: any) => {
-                    console.error("⚠️ Lyria Error:", err);
-                    this.triggerReconnection();
-                },
-                onclose: () => {
-                    console.log("🔌 Lyria desconnectat");
-                    this.session = null;
-                    this.triggerReconnection();
-                }
-            }
-        });
-    }
-
-    private isConnecting = false;
-    private triggerReconnection() {
-        if (this.isConnecting || !this.isPlaying) return;
-        this.isConnecting = true;
-        
-        console.log("🔄 Intentant reconnectar Soundscape...");
-        setTimeout(async () => {
-            try {
-                this.session = null;
-                await this.connectSession();
-            } catch(e) { console.error("Reconnexió fallida", e); }
-            finally { this.isConnecting = false; }
-        }, 2000);
-    }
-
-    private scheduleBuffer(buffer: AudioBuffer) {
-        if (!this.ctx || !this.musicBus) return;
-
-        const src = this.ctx.createBufferSource();
-        src.buffer = buffer;
-        src.connect(this.musicBus); // Connectem al Bus de Música
-
-        const now = this.ctx.currentTime;
-        
-        if (this.nextStartTime < now) {
-            this.nextStartTime = now + this.bufferTime;
+        if (this.ctx && this.masterGain) {
+            this.masterGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.5);
         }
 
-        src.start(this.nextStartTime);
-        this.nextStartTime += buffer.duration;
+        // Pause Lyria Session after fade
+        setTimeout(() => {
+            this.session?.pause();
+        }, 600);
     }
 
-    // --- INTERACTIVITAT ---
+    // --- CONTEXT & PROMPTS ---
 
-    public async updateContext(weather: WeatherData, aiSummary: string) {
+    public updateContext(weather: WeatherData, visualSummary: string) {
+        if (!this.isPlaying) return;
+
+        // Rate Limit Updates (10s)
         const now = Date.now();
-        if (now - this.lastContextUpdate < 2000) return;
+        if (now - this.lastContextUpdate < 10000) return;
         this.lastContextUpdate = now;
 
-        // 1. Prompt Visual
-        if (aiSummary && aiSummary.length > 0) {
-             this.currentVisualPrompt = `Atmosphere: ${aiSummary}. Safe, relaxing, functional audio.`;
-        } else {
-             // Default safe prompt
-             this.currentVisualPrompt = "Atmosphere: Calm nature, relaxing mountains. Safe environment.";
-        }
+        // Perform Ducking (Fade down -> Update -> Fade up)
+        this.performDucking();
 
-        // 2. Prompt Meteo (ENDEL STYLE - EXTREME CIRCADIAN SPLIT)
-        let weatherVibe = "Safe, calm, functional audio";
+        // 1. Determine Prompts
+        this.currentVisualPrompt = visualSummary;
+        this.currentWeatherPrompt = this.buildAtmospherePrompt(weather);
+
+        // 2. Send to Lyria
+        setTimeout(() => this.sendPrompts(), 1000); // Wait for ducking down
+
+        // 3. Update Procedural FX
+        this.updateWindParams(weather.wind);
         
-        const isRaining = weather.code && ((weather.code >= 51 && weather.code <= 67) || (weather.code >= 80 && weather.code <= 99));
-        const isSnowing = weather.code && (weather.code >= 71 && weather.code <= 77);
-        const isStorm = weather.code && (weather.code >= 95);
-        const isFog = weather.code === 45 || weather.code === 48;
-
-        // --- LAYER 1: WEATHER TEXTURE ---
-        if (weather.wind > 40) weatherVibe += ", Deep airflow texture, brown noise drone"; 
-        if (isStorm) weatherVibe += ", Warm sub-bass drone, cozy shelter"; 
-        else if (isRaining) weatherVibe += ", Pink noise texture, wet acoustics, flowing water";
-        else if (isSnowing) weatherVibe += ", Muffled silence, soft texture, cotton-like";
-        else if (isFog) weatherVibe += ", Soft pads, mysterious, blurred texture";
-        else weatherVibe += ", Clear tone, sine waves, open space";
-
-        // --- LAYER 2: CIRCADIAN RHYTHM (DAY vs NIGHT) ---
-        if (!weather.isDay) {
-            // NIGHT: DEEP SLEEP / DELTA
-            weatherVibe += ", SLEEP MODE: 432Hz tuning, Delta waves, deep relaxation, floating, no rhythm, subconscious, dream state, very slow attack";
-        } else {
-            // DAY: FOCUS / FLOW / ALPHA
-            weatherVibe += ", FOCUS MODE: Alpha waves, flow state, clarity, subtle pulse, productive atmosphere, bright presence, nature connection";
-        }
-
-        this.currentWeatherPrompt = weatherVibe;
-
-        // 3. ACTUALITZAR CAPES FISIQUES (SFX)
-        this.updateWeatherSFX(weather);
-
-        if (this.isPlaying && this.session) {
-            // Ducking effect: Lower volume momentarily when changing context
-            if (this.musicBus && this.ctx) {
-                const ct = this.ctx.currentTime;
-                this.musicBus.gain.setTargetAtTime(this.musicVolume * 0.3, ct, 0.5);
-                setTimeout(() => {
-                    if (this.musicBus && this.ctx) {
-                         this.musicBus.gain.setTargetAtTime(this.musicVolume, this.ctx.currentTime, 1.5);
-                    }
-                }, 1000);
-            }
-            this.sendPrompts();
-        }
+        // WMO Codes for Rain: 51-67, 80-82, 95-99
+        const isRaining = (weather.code !== undefined) && (
+            (weather.code >= 51 && weather.code <= 67) || 
+            (weather.code >= 80 && weather.code <= 82) || 
+            (weather.code >= 95)
+        );
+        this.startRainEngine(isRaining, weather.rain);
     }
 
-    private async sendPrompts() {
-        if (!this.session) return;
+    private performDucking() {
+        if (!this.ctx || !this.masterGain) return;
+        const t = this.ctx.currentTime;
+        // Dip volume to 20%
+        this.masterGain.gain.setTargetAtTime(0.2, t, 0.5);
+        // Return to 100% after 2.5s
+        this.masterGain.gain.setTargetAtTime(1.0, t + 2.5, 1.5);
+    }
 
-        // Weight balancing: Weather > Visual > Genre
-        const weightedPrompts = [
+    private buildAtmospherePrompt(w: WeatherData): string {
+        const isDay = w.isDay !== undefined ? w.isDay : true;
+        
+        // ENDEL STYLE LOGIC: DAY vs NIGHT
+        const baseVibe = isDay 
+            ? "Focus mode, alpha waves, steady pulse, clarity, flow state, major key, organic texture" 
+            : "Deep sleep mode, delta waves, 432Hz, no rhythm, floating, subconscious, warm blanket, minimal";
+
+        let weatherVibe = "Calm air";
+        if (w.wind > 40) weatherVibe = "Deep airflow texture, white noise layers";
+        else if (w.wind > 20) weatherVibe = "Breezy texture, movement";
+
+        // Rain Logic using WMO Codes
+        if (w.code && w.code >= 51) {
+            weatherVibe += ", wet acoustics, rainfall texture, cozy shelter";
+        } else if (w.code && w.code >= 71) {
+            weatherVibe += ", muffled silence, crystalline high frequencies, snow acoustics";
+        }
+
+        return `${baseVibe}. ${weatherVibe}. Safe, healing frequencies, spa atmosphere. No aggressive sounds.`;
+    }
+
+    private sendPrompts() {
+        if (!this.session) return;
+        
+        // Weighting: 
+        // Visual (Specific location) = 1.0
+        // Weather/Circadian (Endel Vibe) = 1.2 (Higher priority for functional audio)
+        // Genre (Safety) = 0.5
+
+        const prompts = [
             { text: this.currentVisualPrompt, weight: 1.0 },
-            { text: `Texture & Mode: ${this.currentWeatherPrompt}`, weight: 1.5 }, // Important: Mode (Sleep/Focus)
-            { text: "Genre: Functional Audio, Ambient, Drone, No Melody, Minimalist, Binaural Beats", weight: 0.8 }
+            { text: this.currentWeatherPrompt, weight: 1.2 },
+            { text: "Ambient, Drone, Field Recordings, Functional Music, Non-musical, Minimalist", weight: 0.5 }
         ];
 
-        console.log("🎨 Generant Paisatge Sonor (Circadian):", {
-            Visual: this.currentVisualPrompt,
-            Meteo: this.currentWeatherPrompt
-        });
-
+        console.log("[Soundscape] Sending Prompts:", prompts);
+        
         try {
-            await this.session.setWeightedPrompts({ weightedPrompts });
+            this.session.setWeightedPrompts({ weightedPrompts: prompts });
         } catch (e) {
-            console.error("Error actualitzant prompts:", e);
+            console.warn("Failed to set prompts", e);
         }
     }
 }
