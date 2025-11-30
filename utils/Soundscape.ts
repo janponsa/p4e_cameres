@@ -52,8 +52,8 @@ async function decodeAudioData(
 const LYRIA_MODEL = 'lyria-realtime-exp';
 const LYRIA_SAMPLE_RATE = 48000; // Freqüència de la IA
 
-// Tiny silent MP3 to unlock iOS audio session
-const SILENT_MP3 = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//////////////////////////////////////////////////////////////////wAAAP//OEAAAAAAAAAAAAAAAAAAAAAAAMqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//OEAAAAAAAAAAAAAAAAAAAAAAABiqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+// Tiny silent MP3 to unlock iOS audio session (Using audio/mpeg for better Safari compatibility)
+const SILENT_MP3 = "data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//////////////////////////////////////////////////////////////////wAAAP//OEAAAAAAAAAAAAAAAAAAAAAAAMqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//OEAAAAAAAAAAAAAAAAAAAAAAABiqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 
 class SoundscapeEngine {
     private ai: GoogleGenAI;
@@ -95,7 +95,11 @@ class SoundscapeEngine {
     private silentAudio: HTMLAudioElement | null = null;
 
     constructor() {
-        this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        // IMPORTANT: Lyria model requires v1alpha API version
+        this.ai = new GoogleGenAI({ 
+            apiKey: process.env.API_KEY, 
+            apiVersion: 'v1alpha' 
+        });
     }
 
     /**
@@ -110,16 +114,24 @@ class SoundscapeEngine {
         }
 
         if (this.ctx.state === 'suspended') {
-            this.ctx.resume();
+            this.ctx.resume().catch(e => console.warn("AudioContext resume failed", e));
         }
 
         // Force iOS "Playback" mode by playing a LOOPED silent audio element
         // This is crucial for bypassing the mute switch
         if (!this.silentAudio) {
-            this.silentAudio = new Audio(SILENT_MP3);
+            this.silentAudio = new Audio();
             this.silentAudio.loop = true; // KEEP IT ALIVE
             this.silentAudio.volume = 0.01; // Not 0, just in case iOS ignores 0 volume players
-            this.silentAudio.play().catch((e) => console.warn("Silent audio unlock failed", e));
+            this.silentAudio.crossOrigin = "anonymous";
+            this.silentAudio.src = SILENT_MP3;
+            
+            const playPromise = this.silentAudio.play();
+            if (playPromise !== undefined) {
+                playPromise.catch((e) => {
+                    console.warn("Silent audio unlock failed (non-fatal):", e);
+                });
+            }
         } else {
             // Ensure it's playing if it was paused
             if (this.silentAudio.paused) {
@@ -172,7 +184,7 @@ class SoundscapeEngine {
         this.isConnecting = true;
 
         try {
-            console.log("[Soundscape] Connecting to Lyria...");
+            console.log("[Soundscape] Connecting to Lyria (v1alpha)...");
             this.session = await this.ai.live.music.connect({
                 model: LYRIA_MODEL,
                 callbacks: {
