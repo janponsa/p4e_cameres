@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { ALL_WEBCAMS, SNAPSHOT_BASE_URL } from './constants';
 import WebcamCard from './components/WebcamCard';
@@ -7,7 +6,7 @@ import { SortOption, Webcam } from './types';
 import { Soundscape } from './utils/Soundscape';
 import Onboarding from './components/Onboarding';
 
-// URL de l'API de sessions (només per visualitzar número clients)
+// URL de l'API de sessions
 const SESSIONS_API_URL = 'https://api.projecte4estacions.com/api/sessions';
 const TIMELAPSE_API_BASE = 'https://cams.projecte4estacions.com/api/galeria/';
 
@@ -39,7 +38,7 @@ function App() {
 
   // Soundscape State
   const [isAmbientOn, setIsAmbientOn] = useState(false);
-  const [showMixer, setShowMixer] = useState(false); // Global Mixer Toggle
+  const [showMixer, setShowMixer] = useState(false);
   const [musicVol, setMusicVol] = useState(0.6);
   const [sfxVol, setSfxVol] = useState(0.5);
 
@@ -52,7 +51,6 @@ function App() {
       setMusicVol(vols.music);
       setSfxVol(vols.sfx);
 
-      // Check LocalStorage for Onboarding
       const hasSeenOnboarding = localStorage.getItem('p4e_nexus_onboarding_seen');
       if (!hasSeenOnboarding) {
           setShowOnboarding(true);
@@ -60,9 +58,11 @@ function App() {
   }, []);
 
   const handleOnboardingComplete = () => {
-      // Audio unlock is now handled via onUnlockAudio prop for immediate execution
       localStorage.setItem('p4e_nexus_onboarding_seen', 'true');
       setShowOnboarding(false);
+      // Quan tanquem onboarding, marquem que l'ambient està "encès" visualment
+      // perquè l'onUnlockAudio ja l'haurà activat tècnicament.
+      setIsAmbientOn(true); 
   };
 
   const handleVolumeChange = (type: 'music' | 'sfx', val: number) => {
@@ -219,12 +219,18 @@ function App() {
       });
   }, [themeMode, displayWebcams, isSessionLoading]);
 
-  // 6. Soundscape Logic
+  // --- 6. LOGICA SOUNDSCAPE (MODIFICADA PER IOS) ---
   const toggleAmbientSound = () => {
       if (isAmbientOn) {
           Soundscape.pause();
           setIsAmbientOn(false);
       } else {
+          // --- AQUÍ ESTÀ EL CANVI CLAU ---
+          // Cridem explícitament al mètode 'prepare' igual que a l'Onboarding.
+          // Això garanteix que, si l'usuari entra directament sense onboarding,
+          // el clic a aquest botó desbloquegi l'àudio de l'iPhone igualment.
+          console.log("[App] Botó Atmosfera premut -> Despertant àudio iOS...");
+          Soundscape.prepare(); 
           Soundscape.play();
           setIsAmbientOn(true);
       }
@@ -306,11 +312,9 @@ function App() {
   const hoverBg = isDarkMode ? 'hover:bg-white/10' : 'hover:bg-black/5';
   const sidebarBg = isDarkMode ? 'bg-black/60 border-r border-white/10' : 'bg-white/70 border-r border-gray-200';
   
-  // Specific styles for controls to ensure readability in image mode
   const controlBg = isDarkMode ? 'bg-black/40 border-white/20 text-white' : 'bg-white/80 border-gray-200 text-gray-800';
   const controlHover = isDarkMode ? 'hover:bg-black/60' : 'hover:bg-white';
   
-  // Compact mobile button styles
   const mobileBtnClass = `p-1.5 rounded-lg transition-colors backdrop-blur-md ${isDarkMode ? 'text-white bg-black/20' : 'text-gray-800 bg-white/40'}`;
   const mobileBtnActive = isDarkMode ? 'bg-indigo-500/30 text-indigo-300 ring-1 ring-indigo-500/50' : 'bg-indigo-100 text-indigo-700 ring-1 ring-indigo-200';
 
@@ -448,7 +452,6 @@ function App() {
                         <i className="ph-bold ph-faders text-lg"></i>
                     </button>
                     
-                    {/* MIXER DROPDOWN */}
                     {showMixer && (
                         <div className={`absolute top-full right-0 mt-2 w-48 p-4 rounded-xl shadow-2xl z-50 border backdrop-blur-xl ${isDarkMode ? 'bg-slate-900/90 border-slate-700 text-white' : 'bg-white/90 border-gray-200 text-gray-900'}`}>
                             <div className="flex flex-col gap-4">
@@ -482,7 +485,7 @@ function App() {
                     )}
                 </div>
 
-               {/* SOUNDSCAPE TOGGLE */}
+               {/* SOUNDSCAPE TOGGLE (MODIFICAT PER IOS) */}
                <button 
                  onClick={toggleAmbientSound}
                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full border transition-all duration-300 group backdrop-blur-md ${
@@ -539,7 +542,7 @@ function App() {
                  </div>
                  
                  <div className="flex items-center gap-1.5 lg:hidden">
-                    {/* MOBILE SOUND CONTROLS (Moved here, simplified) */}
+                    {/* MOBILE SOUND CONTROLS */}
                     <div className="flex items-center gap-1 mr-1.5 border-r pr-1.5 border-gray-500/10">
                          {/* Mixer Button Mobile */}
                          <div className="relative">
@@ -582,7 +585,7 @@ function App() {
                             )}
                          </div>
 
-                         {/* Sound Toggle Mobile */}
+                         {/* Sound Toggle Mobile (AMB FIX IOS) */}
                          <button 
                             onClick={toggleAmbientSound}
                             className={`${mobileBtnClass} ${isAmbientOn ? mobileBtnActive : ''}`}
