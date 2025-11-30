@@ -119,14 +119,12 @@ class SoundscapeEngine {
             this.ctx.resume().catch(e => console.warn("AudioContext resume failed", e));
         }
 
-        // 3. HTML5 Audio Unlock (The "Mute Switch" Bypass)
-        // Using WAV to avoid NotSupportedError on some iOS versions
+        // 3. HTML5 Audio Unlock + Media Session (The "Mute Switch" Bypass)
         if (!this.silentAudio) {
             this.silentAudio = document.createElement('audio');
             this.silentAudio.src = SILENT_WAV;
             this.silentAudio.loop = true;
             this.silentAudio.preload = 'auto';
-            // Important: iOS needs to think we are playing "real" audio
             this.silentAudio.volume = 1.0; 
             
             // Attributes to ensure background capability
@@ -145,13 +143,31 @@ class SoundscapeEngine {
 
         // Always try to play if paused, to ensure "Active" session
         if (this.silentAudio.paused) {
-            this.silentAudio.play().catch((e) => {
-                console.warn("Silent audio unlock failed (non-fatal):", e);
-            });
+            this.silentAudio.play()
+                .then(() => {
+                    // CRITICAL: Initialize Media Session to force "Playback" mode on iOS
+                    if ('mediaSession' in navigator) {
+                        navigator.mediaSession.metadata = new MediaMetadata({
+                            title: 'Atmosfera',
+                            artist: 'P4E Nexus',
+                            album: 'Live Soundscape',
+                            artwork: [
+                                { src: 'https://app.projecte4estacions.com/images/logo_p4e_2023_h_blau_200.png', sizes: '200x200', type: 'image/png' }
+                            ]
+                        });
+
+                        // We must define these handlers for the OS to show media controls and respect playback
+                        navigator.mediaSession.setActionHandler('play', () => { this.play(); });
+                        navigator.mediaSession.setActionHandler('pause', () => { this.pause(); });
+                        navigator.mediaSession.setActionHandler('stop', () => { this.pause(); });
+                    }
+                })
+                .catch((e) => {
+                    console.warn("Silent audio unlock failed (non-fatal):", e);
+                });
         }
 
         // 4. Web Audio Keep-Alive
-        // Prevents the AudioContext from being suspended by OS when backgrounded
         if (!this.keepAliveNode && this.ctx) {
             try {
                 const emptyBuffer = this.ctx.createBuffer(1, 1, 22050);
@@ -160,8 +176,6 @@ class SoundscapeEngine {
                 source.loop = true;
                 source.connect(this.ctx.destination);
                 source.start(0);
-                // Keep reference to prevent GC?
-                // Actually source nodes are GC'd when done, but looping ones stay.
             } catch(e) {
                 console.warn("Keep-alive node failed", e);
             }
