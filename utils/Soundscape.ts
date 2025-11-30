@@ -52,7 +52,7 @@ const LYRIA_MODEL = 'lyria-realtime-exp';
 const LYRIA_SAMPLE_RATE = 48000; // Freqüència de la IA
 
 // 1 Second of Silence (Proven Base64 for iOS Unlock)
-const SILENT_MP3 = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU2LjYwLjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//////////////////////////////////////////////////////////////////wAAAP//OEAAAAAAAAAAAAAAAAAAAAAAAMqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//OEAAAAAAAAAAAAAAAAAAAAAAABiqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+const SILENT_MP3 = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU2LjYwLjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD//////////////////////////////////////////////////////////////////wAAAP//OEAAAAAAAAAAAAAAAAAAAAAAAMqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq//OEAAAAAAAAAAAAAAAAAAAAAAABiqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 
 class SoundscapeEngine {
     private ai: GoogleGenAI;
@@ -92,6 +92,7 @@ class SoundscapeEngine {
 
     // iOS Unlock
     private silentAudio: HTMLAudioElement | null = null;
+    private keepAliveNode: ScriptProcessorNode | null = null;
 
     constructor() {
         // IMPORTANT: Lyria model requires v1alpha API version
@@ -124,7 +125,9 @@ class SoundscapeEngine {
             this.silentAudio.src = SILENT_MP3;
             this.silentAudio.loop = true;
             this.silentAudio.preload = 'auto';
-            this.silentAudio.volume = 0.001; // Tiny volume (not 0) to force playback state
+            // KEY FIX: Volume must be 1.0 (Max) so iOS thinks it's "important" media.
+            // Since the file is silent, it won't actually make noise.
+            this.silentAudio.volume = 1.0; 
             
             // Magic attributes for iOS
             this.silentAudio.setAttribute('playsinline', '');
@@ -136,6 +139,8 @@ class SoundscapeEngine {
             this.silentAudio.style.left = '-1000px';
             this.silentAudio.style.opacity = '0';
             this.silentAudio.style.pointerEvents = 'none';
+            this.silentAudio.style.width = '1px';
+            this.silentAudio.style.height = '1px';
             
             document.body.appendChild(this.silentAudio);
             
@@ -151,22 +156,27 @@ class SoundscapeEngine {
             }
         }
 
-        // --- STRATEGY 2: WEB AUDIO OSCILLATOR KICK ---
-        // Generates a brief, nearly silent sound directly on the AudioContext
-        try {
-            const osc = this.ctx.createOscillator();
-            const gain = this.ctx.createGain();
-            osc.connect(gain);
-            gain.connect(this.ctx.destination);
-            
-            osc.type = 'sine';
-            osc.frequency.value = 50; 
-            gain.gain.value = 0.001; 
-            
-            osc.start();
-            osc.stop(this.ctx.currentTime + 0.1); 
-        } catch (e) {
-            console.warn("Oscillator unlock failed", e);
+        // --- STRATEGY 2: WEB AUDIO KEEP-ALIVE ---
+        // Play a silent buffer continuously on the AudioContext to prevent it from sleeping
+        if (!this.keepAliveNode && this.ctx) {
+            try {
+                // Create an empty buffer source
+                const emptyBuffer = this.ctx.createBuffer(1, 1, 22050);
+                const source = this.ctx.createBufferSource();
+                source.buffer = emptyBuffer;
+                source.connect(this.ctx.destination);
+                source.start(0);
+                
+                // Note: Regular buffer sources stop after playing. 
+                // Loop a tiny silent buffer to keep the context running "hot".
+                const loopSource = this.ctx.createBufferSource();
+                loopSource.buffer = emptyBuffer;
+                loopSource.loop = true;
+                loopSource.connect(this.ctx.destination);
+                loopSource.start(0);
+            } catch(e) {
+                console.warn("Keep-alive node failed", e);
+            }
         }
     }
 
