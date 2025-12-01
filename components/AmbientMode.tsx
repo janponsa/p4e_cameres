@@ -432,7 +432,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const slotAStream = isEvenIndex ? playlist[currentIndex]?.streamUrl : playlist[currentIndex + 1]?.streamUrl;
     const slotBStream = isEvenIndex ? playlist[currentIndex + 1]?.streamUrl : playlist[currentIndex]?.streamUrl;
 
-    return (
+return (
         <div 
             className="fixed inset-0 z-[100] bg-black text-white overflow-hidden font-sans cursor-grab active:cursor-grabbing select-none"
             onMouseEnter={() => setIsHovering(true)}
@@ -442,7 +442,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
         >
-            {/* INITIAL LOADING SCREEN (Z-INDEX 200 to cover everything) */}
+            {/* INITIAL LOADING SCREEN */}
             <div className={`absolute inset-0 z-[200] bg-black flex flex-col items-center justify-center transition-opacity duration-700 ${!isInitialized ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
                 <i className="ph-bold ph-broadcast text-4xl text-indigo-500 animate-pulse mb-4"></i>
                 <span className="text-white/50 text-xs uppercase tracking-[0.3em]">Sintonitzant mode TV...</span>
@@ -471,36 +471,75 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             {/* Noise Overlay */}
             <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-15 mix-blend-overlay pointer-events-none z-20"></div>
 
-            {/* HUD BOTTOM LEFT - ULTRA COMPACT MOBILE - NO UPPERCASE */}
-            <div className={`absolute bottom-6 left-4 sm:bottom-10 sm:left-10 z-30 flex flex-col gap-1 transition-opacity duration-500 pointer-events-none ${!isInitialized ? 'opacity-0' : 'opacity-100'}`}>
+            {/* HUD BOTTOM LEFT - MÉS PETIT EN VERTICAL */}
+            <div className={`
+                absolute z-30 flex flex-col transition-opacity duration-500 pointer-events-none 
+                ${!isInitialized ? 'opacity-0' : 'opacity-100'}
+                
+                /* POSICIÓ */
+                gap-1 
+                bottom-8 left-6                     /* Base */
+                portrait:bottom-10 portrait:left-6  /* Vertical: Més avall que abans */
+                landscape:bottom-3 landscape:left-6 
+                md:bottom-10 md:left-10
+            `}>
                 {/* Meta Header */}
                 <div className="flex items-center gap-2 mb-0.5 opacity-80">
-                    <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-600/80 backdrop-blur-sm text-white text-[7px] sm:text-[10px] font-bold shadow-lg border border-red-500/50">
+                    <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-600/80 backdrop-blur-sm text-white font-bold shadow-lg border border-red-500/50 
+                        text-[9px] portrait:text-[9px] landscape:text-[8px] md:text-[10px]">
                         <div className="w-1 h-1 bg-white rounded-full animate-pulse"></div> LIVE
                     </div>
-                    <span className="text-white/70 text-[10px] sm:text-xs font-medium border-l border-white/20 pl-2">
+                    <span className="font-medium border-l border-white/20 pl-2 text-white/70 shadow-black drop-shadow-sm
+                        text-xs portrait:text-xs landscape:text-[10px] md:text-xs">
                         {activeWebcam.region}
                     </span>
                 </div>
                 
-                {/* Main Title - Normal Case */}
-                <h1 className="text-base sm:text-4xl md:text-5xl font-bold text-white leading-none shadow-black drop-shadow-md">
+                {/* Main Title - REDUÏT EN VERTICAL */}
+                <h1 className="font-bold text-white leading-none shadow-black drop-shadow-md
+                    text-3xl                /* Base */
+                    portrait:text-2xl       /* Vertical: Ara és 2xl (molt més contingut) */
+                    landscape:text-xl       /* Horitzontal: Petit */
+                    md:text-5xl             /* Desktop */
+                ">
                     {activeWebcam.name}
                 </h1>
 
-                {/* Weather Info */}
+                {/* Weather Info - TOT MÉS PETIT EN VERTICAL */}
                 {weather && (
-                    <div className="flex items-center gap-2 sm:gap-5 mt-1 text-white/90 bg-black/30 backdrop-blur-md px-2 py-0.5 sm:px-4 sm:py-2 rounded-lg border border-white/5 w-fit">
-                        <div className="flex items-center gap-1.5 sm:gap-2">
-                            {weatherIcon && <i className={`ph-fill ${weatherIcon.icon} text-xs sm:text-2xl ${weatherIcon.color} drop-shadow-sm`}></i>}
-                            <span className="text-xl sm:text-4xl font-medium tracking-tight">{weather.temp}°</span>
+                    <div className="flex items-center mt-1 text-white/90 bg-black/30 backdrop-blur-md rounded-lg border border-white/5 w-fit
+                        gap-3 px-3 py-1.5                             /* Base */
+                        portrait:gap-3 portrait:px-3 portrait:py-1.5  /* Vertical: Padding més petit */
+                        landscape:gap-2 landscape:px-2 landscape:py-1 
+                        md:gap-5 md:px-4 md:py-2
+                    ">
+                        {/* --- BLOC TEMPERATURA --- */}
+                        <div className="flex items-center gap-1.5">
+                            {weatherIcon && <i className={`ph-fill ${weatherIcon.icon} ${weatherIcon.color} drop-shadow-sm 
+                                text-lg portrait:text-lg landscape:text-sm md:text-2xl
+                            `}></i>}
+                            <span className="font-medium tracking-tight
+                                text-xl portrait:text-xl landscape:text-lg md:text-4xl
+                            ">{weather.temp}°</span>
                         </div>
-                        <div className="w-px h-3 sm:h-8 bg-white/20"></div>
-                        <div className="flex items-center gap-1 sm:gap-2">
-                            <i className="ph-fill ph-wind text-[10px] sm:text-lg text-blue-200/70"></i>
-                            <div className="flex flex-col leading-none">
-                                <span className="text-[10px] sm:text-sm font-medium">{weather.wind}</span>
-                                <span className="text-[7px] sm:text-[9px] font-medium text-white/40">km/h</span>
+                        
+                        {/* Separador */}
+                        <div className="w-px bg-white/20 h-4 portrait:h-4 landscape:h-3 md:h-8"></div>
+                        
+                        {/* --- BLOC VENT --- */}
+                        <div className="flex items-center gap-1.5">
+                            <i className="ph-fill ph-wind text-blue-200/70 
+                                text-lg portrait:text-lg landscape:text-sm md:text-2xl
+                            "></i>
+                            
+                            <div className="flex items-center gap-1">
+                                <span className="font-medium 
+                                    text-xl portrait:text-xl landscape:text-lg md:text-4xl
+                                ">{weather.wind}</span>
+                                
+                                <span className="font-medium text-white/40 self-end mb-0.5
+                                    text-[9px] portrait:text-[9px] landscape:text-[7px] md:text-sm
+                                ">km/h</span>
                             </div>
                         </div>
                     </div>
@@ -515,15 +554,28 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                 ></div>
             </div>
 
-            {/* EXIT BUTTON */}
-            <div className={`absolute top-4 left-4 sm:top-8 sm:left-8 z-50 transition-all duration-500 ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}`}>
+            {/* EXIT BUTTON - TAMBÉ REDUÏT EN VERTICAL */}
+            <div className={`absolute z-50 transition-all duration-500 
+                top-6 left-6 
+                portrait:top-6 portrait:left-6 /* Vertical: Més petit i a la cantonada */
+                landscape:top-3 landscape:left-4 
+                md:top-8 md:left-8
+                ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}`}>
                 <button 
                     onClick={onExit}
-                    className="group flex items-center gap-2 bg-black/40 hover:bg-white hover:text-black text-white border border-white/20 backdrop-blur-xl pl-3 pr-1.5 py-1.5 rounded-full transition-all shadow-xl"
+                    className="group flex items-center gap-2 bg-black/40 hover:bg-white hover:text-black text-white border border-white/20 backdrop-blur-xl rounded-full transition-all shadow-xl
+                        pl-3 pr-1.5 py-1.5 
+                        portrait:pl-3 portrait:pr-1.5 portrait:py-1.5 /* Botó vertical petit */
+                        landscape:pl-2 landscape:pr-1 landscape:py-0.5
+                    "
                 >
-                    <span className="text-[10px] font-bold tracking-wider">Sortir</span>
-                    <div className="bg-white/20 group-hover:bg-black/10 rounded-full w-5 h-5 flex items-center justify-center">
-                        <i className="ph-bold ph-x text-[10px]"></i>
+                    <span className="font-bold tracking-wider
+                        text-[10px] portrait:text-[10px] landscape:text-[8px]
+                    ">Sortir</span>
+                    <div className="bg-white/20 group-hover:bg-black/10 rounded-full flex items-center justify-center
+                        w-5 h-5 portrait:w-5 portrait:h-5 landscape:w-4 landscape:h-4
+                    ">
+                        <i className="ph-bold ph-x text-[10px] portrait:text-[10px] landscape:text-[8px]"></i>
                     </div>
                 </button>
             </div>
