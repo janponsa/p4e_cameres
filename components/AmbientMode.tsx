@@ -16,12 +16,14 @@ const AmbientHlsPlayer = React.memo(({
     streamUrl, 
     isActive, 
     shouldLoad,
+    panX, // New prop for manual panning (0-100)
     onReady,
     onError
 }: { 
     streamUrl: string, 
     isActive: boolean, 
     shouldLoad: boolean,
+    panX: number,
     onReady?: () => void,
     onError?: () => void
 }) => {
@@ -111,7 +113,8 @@ const AmbientHlsPlayer = React.memo(({
         <div className={`absolute inset-0 w-full h-full bg-black transition-opacity duration-1000 ${isActive ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}>
             <video 
                 ref={videoRef}
-                className="w-full h-full object-cover bg-black"
+                className="w-full h-full object-cover bg-black transition-[object-position] duration-100 ease-out"
+                style={{ objectPosition: `${panX}% center` }} 
                 muted
                 playsInline
             />
@@ -145,7 +148,7 @@ type WeatherCacheEntry = {
 const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     // Playlist Management: Keep track of upcoming items
     const [playlist, setPlaylist] = useState<Webcam[]>([]);
-    const [currentIndex, setCurrentIndex] = useState(0); // Tracks current position in playlist
+    const [currentIndex, setCurrentIndex] = useState(0); 
     
     // Slot Logic
     const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A');
@@ -154,6 +157,10 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const [weather, setWeather] = useState<WeatherData | null>(null);
     const [progress, setProgress] = useState(0);
     const [isHovering, setIsHovering] = useState(false);
+    
+    // Pan Interaction State (0-100, default 50)
+    const [panX, setPanX] = useState(50);
+    const touchStartX = useRef<number | null>(null);
     
     // Loading State
     const [isInitialized, setIsInitialized] = useState(false);
@@ -164,36 +171,46 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const webcamListRef = useRef<Webcam[]>(webcams);
     
     // CONSTANTS
-    const DURATION = 20000; 
-    const PRELOAD_PCT = 75; 
+    const DURATION = 12000; // Reduced to 10s
+    const PRELOAD_PCT = 60; // Start loading earlier (60%) due to shorter duration
     const CACHE_TTL = 10 * 60 * 1000; 
     const AUDIO_UPDATE_INTERVAL = 3 * 60 * 1000;
 
-    // Helper to get a random webcam ensuring no immediate repetition
-    const getRandomWebcam = useCallback((lastId?: string): Webcam => {
-        const pool = webcamListRef.current;
-        if (pool.length === 0) return {} as Webcam;
-        if (pool.length === 1) return pool[0];
+    // Helper: Fisher-Yates Shuffle
+    const shuffleArray = (array: Webcam[]) => {
+        const arr = [...array];
+        for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+    };
 
-        let candidate;
-        do {
-            candidate = pool[Math.floor(Math.random() * pool.length)];
-        } while (candidate.id === lastId);
-        
-        return candidate;
-    }, []);
-
-    // 0. INIT PLAYLIST
+    // 0. INIT PLAYLIST (SMART SHUFFLE: High/Low Alt Mix)
     useEffect(() => {
         if (webcams.length > 0) {
             webcamListRef.current = webcams;
             
-            // Generate initial sequence (A -> B -> C...)
-            const first = getRandomWebcam();
-            const second = getRandomWebcam(first.id);
-            const third = getRandomWebcam(second.id);
+            // Separate by Altitude
+            const highAlt = webcams.filter(w => w.altitude >= 1500);
+            const lowAlt = webcams.filter(w => w.altitude < 1500);
             
-            setPlaylist([first, second, third]);
+            // Shuffle groups independently
+            const shuffledHigh = shuffleArray(highAlt);
+            const shuffledLow = shuffleArray(lowAlt);
+            
+            // Interleave (High -> Low -> High -> Low...)
+            const smartPlaylist: Webcam[] = [];
+            const maxLength = Math.max(shuffledHigh.length, shuffledLow.length);
+            
+            for (let i = 0; i < maxLength; i++) {
+                if (i < shuffledHigh.length) smartPlaylist.push(shuffledHigh[i]);
+                if (i < shuffledLow.length) smartPlaylist.push(shuffledLow[i]);
+            }
+            
+            // Ensure no immediate repetition if we loop back
+            // (The interleaving logic handles standard variety well enough)
+            setPlaylist(smartPlaylist);
             
             // Initial Soundscape
             if (Date.now() - lastAudioUpdate.current > AUDIO_UPDATE_INTERVAL) {
@@ -205,42 +222,44 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                 lastAudioUpdate.current = Date.now();
             }
         }
-    }, [webcams, getRandomWebcam]);
+    }, [webcams]);
 
     // Extend Playlist when needed
     useEffect(() => {
-        // If we are getting close to the end, add more items
+        // Infinite loop logic: Just re-append the smart playlist when getting close to end
         if (playlist.length > 0 && currentIndex >= playlist.length - 2) {
-            const lastCam = playlist[playlist.length - 1];
-            const nextCam = getRandomWebcam(lastCam.id);
-            setPlaylist(prev => [...prev, nextCam]);
+            // Re-shuffle for variety in the next batch
+            // We can just re-run the interleaving logic on the original list
+            const highAlt = webcamListRef.current.filter(w => w.altitude >= 1500);
+            const lowAlt = webcamListRef.current.filter(w => w.altitude < 1500);
+            const shuffledHigh = shuffleArray(highAlt);
+            const shuffledLow = shuffleArray(lowAlt);
+            
+            const nextBatch: Webcam[] = [];
+            const maxLength = Math.max(shuffledHigh.length, shuffledLow.length);
+            for (let i = 0; i < maxLength; i++) {
+                if (i < shuffledHigh.length) nextBatch.push(shuffledHigh[i]);
+                if (i < shuffledLow.length) nextBatch.push(shuffledLow[i]);
+            }
+            
+            // Ensure first of new batch != last of current playlist
+            if (nextBatch[0].id === playlist[playlist.length-1].id) {
+                nextBatch.push(nextBatch.shift()!); // Rotate one
+            }
+
+            setPlaylist(prev => [...prev, ...nextBatch]);
         }
-    }, [currentIndex, playlist, getRandomWebcam]);
+    }, [currentIndex, playlist]);
 
     // Derived State for A/B Slots
-    // Slot A displays even indices, Slot B displays odd indices (conceptually)
-    // Actually, we just need to know WHICH webcam goes to WHICH slot
-    // Let's simplify: activeSlot determines which index is VISIBLE.
-    // The OTHER slot should be loading index + 1.
-    
     const activeWebcam = playlist[currentIndex];
-    const nextWebcam = playlist[currentIndex + 1];
-
-    // Helper to advance
+    
+    // Advance Logic
     const advanceCamera = () => {
         setActiveSlot(prev => prev === 'A' ? 'B' : 'A');
-        // Delay the index update slightly to allow crossfade start? 
-        // No, we need index update to trigger logic, but visual swap happens via activeSlot opacity
-        // Wait... if we update index, both slots might change content.
-        // We need stable content for crossfade.
-        
-        // Correct Logic:
-        // Slot A holds: playlist[even]
-        // Slot B holds: playlist[odd]
-        // If index is 0 (even), A is active (showing 0). B is preparing 1.
-        // Advance -> index 1 (odd). B becomes active (showing 1). A prepares 2.
-        
         setCurrentIndex(prev => prev + 1);
+        // Reset Pan on change
+        setPanX(50); 
     };
 
     const handleStreamError = () => {
@@ -273,7 +292,37 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
         }, 100);
 
         return () => clearInterval(timer);
-    }, [currentIndex, isInitialized]); // Restart timer on index change
+    }, [currentIndex, isInitialized]);
+
+    // 2. TOUCH PANNING LOGIC
+    const handleTouchStart = (e: React.TouchEvent) => {
+        touchStartX.current = e.touches[0].clientX;
+    };
+
+    const handleTouchMove = (e: React.TouchEvent) => {
+        if (touchStartX.current === null) return;
+        
+        const currentX = e.touches[0].clientX;
+        const diffX = touchStartX.current - currentX; // Positive if dragging LEFT (showing RIGHT content)
+        const screenWidth = window.innerWidth;
+        
+        // Sensitivity factor: how much finger movement translates to % movement
+        // 100% of screen width = 100% of image pan seems fair
+        const panDelta = (diffX / screenWidth) * 100;
+        
+        setPanX(prev => {
+            // Invert logic: Dragging LEFT (positive diff) should increase % (reveal right)
+            // Dragging RIGHT (negative diff) should decrease % (reveal left)
+            let newPan = prev + (panDelta * 0.5); // 0.5 dampening
+            return Math.max(0, Math.min(100, newPan));
+        });
+        
+        touchStartX.current = currentX;
+    };
+
+    const handleTouchEnd = () => {
+        touchStartX.current = null;
+    };
 
     // 3. WEATHER FETCHING
     useEffect(() => {
@@ -382,28 +431,19 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
         ? getWeatherIcon(weather.code, weather.isDay) 
         : null;
 
-    // Slot Content Logic:
-    // If currentIndex is Even -> A holds Current, B holds Next
-    // If currentIndex is Odd -> B holds Current, A holds Next
-    
     const isEvenIndex = currentIndex % 2 === 0;
-    
-    // Slot A Stream:
-    // If even index (0, 2), A shows current (0, 2).
-    // If odd index (1, 3), A shows next (2, 4).
     const slotAStream = isEvenIndex ? playlist[currentIndex]?.streamUrl : playlist[currentIndex + 1]?.streamUrl;
-    
-    // Slot B Stream:
-    // If even index (0, 2), B shows next (1, 3).
-    // If odd index (1, 3), B shows current (1, 3).
     const slotBStream = isEvenIndex ? playlist[currentIndex + 1]?.streamUrl : playlist[currentIndex]?.streamUrl;
 
     return (
         <div 
-            className="fixed inset-0 z-[100] bg-black text-white overflow-hidden font-sans cursor-none hover:cursor-default select-none"
+            className="fixed inset-0 z-[100] bg-black text-white overflow-hidden font-sans cursor-grab active:cursor-grabbing select-none"
             onMouseEnter={() => setIsHovering(true)}
             onMouseLeave={() => setIsHovering(false)}
             onClick={() => setIsHovering(h => !h)}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
         >
             {/* INITIAL LOADING SCREEN */}
             {!isInitialized && (
@@ -416,8 +456,9 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             {/* Slot A */}
             <AmbientHlsPlayer 
                 streamUrl={slotAStream} 
-                isActive={isEvenIndex} // Active if Even
+                isActive={isEvenIndex}
                 shouldLoad={isEvenIndex || (!isEvenIndex && progress > PRELOAD_PCT)} 
+                panX={panX}
                 onReady={isEvenIndex ? handleStreamReady : undefined}
                 onError={isEvenIndex ? handleStreamError : undefined}
             />
@@ -425,8 +466,9 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             {/* Slot B */}
             <AmbientHlsPlayer 
                 streamUrl={slotBStream} 
-                isActive={!isEvenIndex} // Active if Odd
+                isActive={!isEvenIndex}
                 shouldLoad={!isEvenIndex || (isEvenIndex && progress > PRELOAD_PCT)} 
+                panX={panX}
                 onReady={!isEvenIndex ? handleStreamReady : undefined}
                 onError={!isEvenIndex ? handleStreamError : undefined}
             />
@@ -446,7 +488,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                     </span>
                 </div>
                 
-                {/* Main Title - Much Smaller */}
+                {/* Main Title */}
                 <h1 className="text-2xl sm:text-4xl md:text-5xl font-bold tracking-tighter text-white leading-none shadow-black drop-shadow-md">
                     {activeWebcam.name}
                 </h1>
