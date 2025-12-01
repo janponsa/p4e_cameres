@@ -177,7 +177,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const webcamListRef = useRef<Webcam[]>(webcams);
     
     // CONSTANTS
-    const DURATION = 10000; 
+    const DURATION = 14000; 
     const PRELOAD_PCT = 60; 
     const CACHE_TTL = 10 * 60 * 1000; 
     const AUDIO_UPDATE_INTERVAL = 3 * 60 * 1000;
