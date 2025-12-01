@@ -49,13 +49,13 @@ const AmbientHlsPlayer = React.memo(({
         const video = videoRef.current;
         if (!video) return;
 
-        // FAIL-SAFE: If video doesn't play in 7 seconds, skip
+        // FAIL-SAFE: If video doesn't play in 5 seconds (reduced from 7), skip
         loadTimeoutRef.current = window.setTimeout(() => {
             if (video.paused && onError) {
-                console.warn("Stream timeout, skipping:", streamUrl);
+                console.warn("Stream timeout (5s), skipping:", streamUrl);
                 onError();
             }
-        }, 7000);
+        }, 5000);
 
         const cacheBust = Math.floor(Date.now() / 10000); 
         const urlWithCache = `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}t=${cacheBust}`;
@@ -68,6 +68,9 @@ const AmbientHlsPlayer = React.memo(({
                 lowLatencyMode: true,
                 backBufferLength: 0, 
                 startLevel: -1,
+                manifestLoadingTimeOut: 5000, // Fast fail
+                levelLoadingTimeOut: 5000,
+                fragLoadingTimeOut: 5000
             });
             
             hlsRef.current = hls;
@@ -80,7 +83,7 @@ const AmbientHlsPlayer = React.memo(({
 
             hls.on(Hls.Events.ERROR, (event, data) => {
                 if (data.fatal) {
-                    if (onError) onError();
+                    if (onError) onError(); // Report error up immediately
                     hls.destroy();
                 }
             });
@@ -98,9 +101,8 @@ const AmbientHlsPlayer = React.memo(({
             if (onReady) onReady();
         };
 
-        // Add both playing and loadedmetadata listeners for better reliability
         video.addEventListener('playing', handlePlaying);
-        video.addEventListener('loadedmetadata', handlePlaying);
+        video.addEventListener('loadedmetadata', handlePlaying); // Fallback for some browsers
 
         return () => {
             video.removeEventListener('playing', handlePlaying);
@@ -164,6 +166,9 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const [progress, setProgress] = useState(0);
     const [isHovering, setIsHovering] = useState(false);
     
+    // Sound State
+    const [isAudioOn, setIsAudioOn] = useState(true);
+
     // Pan Interaction State
     const [panX, setPanX] = useState(50);
     const touchStartX = useRef<number | null>(null);
@@ -221,6 +226,8 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             
             setPlaylist(smartPlaylist);
             
+            // Ensure audio is playing on enter (if it wasn't already)
+            // But we respect user toggle inside the mode
             if (Date.now() - lastAudioUpdate.current > AUDIO_UPDATE_INTERVAL) {
                 const initialWeather: WeatherData = {
                     temp: "15", humidity: 50, wind: 10, rain: 0, 
@@ -265,12 +272,24 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     };
 
     const handleStreamError = () => {
+        console.warn("Skipping bad stream", activeWebcam?.name);
         advanceCamera();
     };
 
     const handleStreamReady = () => {
         if (!isInitialized) {
             setIsInitialized(true);
+        }
+    };
+
+    const toggleAudio = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (isAudioOn) {
+            Soundscape.pause();
+            setIsAudioOn(false);
+        } else {
+            Soundscape.play();
+            setIsAudioOn(true);
         }
     };
 
@@ -432,7 +451,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const slotAStream = isEvenIndex ? playlist[currentIndex]?.streamUrl : playlist[currentIndex + 1]?.streamUrl;
     const slotBStream = isEvenIndex ? playlist[currentIndex + 1]?.streamUrl : playlist[currentIndex]?.streamUrl;
 
-return (
+    return (
         <div 
             className="fixed inset-0 z-[100] bg-black text-white overflow-hidden font-sans cursor-grab active:cursor-grabbing select-none"
             onMouseEnter={() => setIsHovering(true)}
@@ -442,7 +461,7 @@ return (
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
         >
-            {/* INITIAL LOADING SCREEN */}
+            {/* INITIAL LOADING SCREEN (Z-INDEX 200 to cover everything) */}
             <div className={`absolute inset-0 z-[200] bg-black flex flex-col items-center justify-center transition-opacity duration-700 ${!isInitialized ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
                 <i className="ph-bold ph-broadcast text-4xl text-indigo-500 animate-pulse mb-4"></i>
                 <span className="text-white/50 text-xs uppercase tracking-[0.3em]">Sintonitzant mode TV...</span>
@@ -471,74 +490,70 @@ return (
             {/* Noise Overlay */}
             <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-15 mix-blend-overlay pointer-events-none z-20"></div>
 
-            {/* HUD BOTTOM LEFT - MÉS PETIT EN VERTICAL */}
+            {/* HUD BOTTOM LEFT - RESPONSIVE SCALING (BALANCED) */}
             <div className={`
                 absolute z-30 flex flex-col transition-opacity duration-500 pointer-events-none 
                 ${!isInitialized ? 'opacity-0' : 'opacity-100'}
                 
-                /* POSICIÓ */
                 gap-1 
-                bottom-8 left-6                     /* Base */
-                portrait:bottom-10 portrait:left-6  /* Vertical: Més avall que abans */
-                landscape:bottom-3 landscape:left-6 
+                bottom-6 left-4                     
                 md:bottom-10 md:left-10
             `}>
                 {/* Meta Header */}
                 <div className="flex items-center gap-2 mb-0.5 opacity-80">
                     <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-600/80 backdrop-blur-sm text-white font-bold shadow-lg border border-red-500/50 
-                        text-[9px] portrait:text-[9px] landscape:text-[8px] md:text-[10px]">
-                        <div className="w-1 h-1 bg-white rounded-full animate-pulse"></div> LIVE
+                        text-[7px] md:text-sm md:px-2.5 md:py-0.5">
+                        <div className="w-1 h-1 md:w-1.5 md:h-1.5 bg-white rounded-full animate-pulse"></div> LIVE
                     </div>
                     <span className="font-medium border-l border-white/20 pl-2 text-white/70 shadow-black drop-shadow-sm
-                        text-xs portrait:text-xs landscape:text-[10px] md:text-xs">
+                        text-[10px] md:text-lg">
                         {activeWebcam.region}
                     </span>
                 </div>
                 
-                {/* Main Title - REDUÏT EN VERTICAL */}
+                {/* Main Title - Responsive Scale Balanced */}
                 <h1 className="font-bold text-white leading-none shadow-black drop-shadow-md
-                    text-3xl                /* Base */
-                    portrait:text-2xl       /* Vertical: Ara és 2xl (molt més contingut) */
-                    landscape:text-xl       /* Horitzontal: Petit */
-                    md:text-5xl             /* Desktop */
+                    text-base               
+                    md:text-4xl             
+                    lg:text-5xl             
+                    xl:text-6xl             
+                    2xl:text-7xl            
                 ">
                     {activeWebcam.name}
                 </h1>
 
-                {/* Weather Info - TOT MÉS PETIT EN VERTICAL */}
+                {/* Weather Info */}
                 {weather && (
                     <div className="flex items-center mt-1 text-white/90 bg-black/30 backdrop-blur-md rounded-lg border border-white/5 w-fit
-                        gap-3 px-3 py-1.5                             /* Base */
-                        portrait:gap-3 portrait:px-3 portrait:py-1.5  /* Vertical: Padding més petit */
-                        landscape:gap-2 landscape:px-2 landscape:py-1 
-                        md:gap-5 md:px-4 md:py-2
+                        gap-2 px-2 py-0.5                             
+                        md:gap-5 md:px-4 md:py-2.5 md:mt-3 md:rounded-xl
                     ">
                         {/* --- BLOC TEMPERATURA --- */}
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 md:gap-3">
                             {weatherIcon && <i className={`ph-fill ${weatherIcon.icon} ${weatherIcon.color} drop-shadow-sm 
-                                text-lg portrait:text-lg landscape:text-sm md:text-2xl
+                                text-sm md:text-3xl lg:text-4xl
                             `}></i>}
                             <span className="font-medium tracking-tight
-                                text-xl portrait:text-xl landscape:text-lg md:text-4xl
+                                text-lg md:text-4xl lg:text-5xl
                             ">{weather.temp}°</span>
                         </div>
                         
                         {/* Separador */}
-                        <div className="w-px bg-white/20 h-4 portrait:h-4 landscape:h-3 md:h-8"></div>
+                        <div className="w-px bg-white/20 h-3 md:h-8 lg:h-10"></div>
                         
                         {/* --- BLOC VENT --- */}
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 md:gap-3">
                             <i className="ph-fill ph-wind text-blue-200/70 
-                                text-lg portrait:text-lg landscape:text-sm md:text-2xl
+                                text-xs md:text-2xl lg:text-3xl
                             "></i>
                             
                             <div className="flex items-center gap-1">
                                 <span className="font-medium 
-                                    text-xl portrait:text-xl landscape:text-lg md:text-4xl
+                                    text-sm md:text-2xl lg:text-3xl
                                 ">{weather.wind}</span>
                                 
                                 <span className="font-medium text-white/40 self-end mb-0.5
-                                    text-[9px] portrait:text-[9px] landscape:text-[7px] md:text-sm
+                                    text-[9px] md:text-sm lg:text-base md:mb-1
                                 ">km/h</span>
                             </div>
                         </div>
@@ -554,29 +569,44 @@ return (
                 ></div>
             </div>
 
-            {/* EXIT BUTTON - TAMBÉ REDUÏT EN VERTICAL */}
+            {/* CONTROLS (EXIT + AUDIO) */}
             <div className={`absolute z-50 transition-all duration-500 
-                top-6 left-6 
-                portrait:top-6 portrait:left-6 /* Vertical: Més petit i a la cantonada */
-                landscape:top-3 landscape:left-4 
+                top-4 left-4 
                 md:top-8 md:left-8
-                ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}`}>
+                ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}
+                flex items-center gap-2 md:gap-4
+            `}>
                 <button 
                     onClick={onExit}
                     className="group flex items-center gap-2 bg-black/40 hover:bg-white hover:text-black text-white border border-white/20 backdrop-blur-xl rounded-full transition-all shadow-xl
                         pl-3 pr-1.5 py-1.5 
-                        portrait:pl-3 portrait:pr-1.5 portrait:py-1.5 /* Botó vertical petit */
-                        landscape:pl-2 landscape:pr-1 landscape:py-0.5
+                        md:pl-5 md:pr-3 md:py-2.5
                     "
                 >
                     <span className="font-bold tracking-wider
-                        text-[10px] portrait:text-[10px] landscape:text-[8px]
+                        text-[10px] md:text-sm
                     ">Sortir</span>
                     <div className="bg-white/20 group-hover:bg-black/10 rounded-full flex items-center justify-center
-                        w-5 h-5 portrait:w-5 portrait:h-5 landscape:w-4 landscape:h-4
+                        w-5 h-5 md:w-7 md:h-7
                     ">
-                        <i className="ph-bold ph-x text-[10px] portrait:text-[10px] landscape:text-[8px]"></i>
+                        <i className="ph-bold ph-x text-[10px] md:text-xs"></i>
                     </div>
+                </button>
+
+                <button 
+                    onClick={toggleAudio}
+                    className={`flex items-center justify-center rounded-full transition-all shadow-xl backdrop-blur-xl border
+                        w-8 h-8 md:w-12 md:h-12
+                        ${isAudioOn 
+                            ? 'bg-black/40 text-white border-white/20 hover:bg-white hover:text-black' 
+                            : 'bg-red-500/80 text-white border-red-400 hover:bg-red-600'
+                        }
+                    `}
+                    title={isAudioOn ? "Silenciar" : "Activar So"}
+                >
+                    <i className={`ph-bold ${isAudioOn ? 'ph-speaker-high' : 'ph-speaker-slash'} 
+                        text-sm md:text-lg
+                    `}></i>
                 </button>
             </div>
         </div>

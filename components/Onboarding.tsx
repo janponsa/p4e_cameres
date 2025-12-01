@@ -12,7 +12,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete, onUnlockAudio }) =>
 
     // Gestió de la seqüència temporal
     useEffect(() => {
-        const timers: NodeJS.Timeout[] = [];
+        const timers: ReturnType<typeof setTimeout>[] = [];
         const next = (s: number, delay: number) => {
             timers.push(setTimeout(() => setStep(s), delay));
         };
