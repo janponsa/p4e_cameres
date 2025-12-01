@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo, useEffect } from 'react';
 import { ALL_WEBCAMS, SNAPSHOT_BASE_URL } from './constants';
 import WebcamCard from './components/WebcamCard';
@@ -56,16 +55,18 @@ function App() {
       setMusicVol(vols.music);
       setSfxVol(vols.sfx);
 
-      // Check LocalStorage for Onboarding
-      const hasSeenOnboarding = localStorage.getItem('p4e_nexus_onboarding_seen');
-      if (!hasSeenOnboarding) {
+      // Check LocalStorage for Onboarding Skip Preference
+      // Changed key to v2 to force users to see new intro once
+      const shouldSkip = localStorage.getItem('p4e_nexus_skip_intro_v2');
+      if (shouldSkip !== 'true') {
           setShowOnboarding(true);
       }
   }, []);
 
   const handleOnboardingComplete = () => {
-      // Audio unlock is now handled via onUnlockAudio prop for immediate execution
-      localStorage.setItem('p4e_nexus_onboarding_seen', 'true');
+      // Audio unlock is handled via onUnlockAudio prop
+      // We do NOT save preference here automatically anymore. 
+      // The Onboarding component decides if it should be saved based on checkbox.
       setShowOnboarding(false);
   };
 
