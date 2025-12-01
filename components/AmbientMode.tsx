@@ -16,7 +16,7 @@ const AmbientHlsPlayer = React.memo(({
     streamUrl, 
     isActive, 
     shouldLoad,
-    panX, // New prop for manual panning (0-100)
+    panX, 
     onReady,
     onError
 }: { 
@@ -98,9 +98,13 @@ const AmbientHlsPlayer = React.memo(({
             if (onReady) onReady();
         };
 
+        // Add both playing and loadedmetadata listeners for better reliability
         video.addEventListener('playing', handlePlaying);
+        video.addEventListener('loadedmetadata', handlePlaying);
+
         return () => {
             video.removeEventListener('playing', handlePlaying);
+            video.removeEventListener('loadedmetadata', handlePlaying);
             if (hlsRef.current) {
                 hlsRef.current.destroy();
                 hlsRef.current = null;
@@ -116,7 +120,9 @@ const AmbientHlsPlayer = React.memo(({
                 className="w-full h-full object-cover bg-black transition-[object-position] duration-100 ease-out"
                 style={{ objectPosition: `${panX}% center` }} 
                 muted
+                autoPlay
                 playsInline
+                webkit-playsinline="true"
             />
             {/* Reduced gradient overlay */}
             <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20 pointer-events-none"></div>
@@ -146,7 +152,7 @@ type WeatherCacheEntry = {
 };
 
 const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
-    // Playlist Management: Keep track of upcoming items
+    // Playlist Management
     const [playlist, setPlaylist] = useState<Webcam[]>([]);
     const [currentIndex, setCurrentIndex] = useState(0); 
     
@@ -158,7 +164,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const [progress, setProgress] = useState(0);
     const [isHovering, setIsHovering] = useState(false);
     
-    // Pan Interaction State (0-100, default 50)
+    // Pan Interaction State
     const [panX, setPanX] = useState(50);
     const touchStartX = useRef<number | null>(null);
     
@@ -171,8 +177,8 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const webcamListRef = useRef<Webcam[]>(webcams);
     
     // CONSTANTS
-    const DURATION = 12000; // Reduced to 10s
-    const PRELOAD_PCT = 60; // Start loading earlier (60%) due to shorter duration
+    const DURATION = 10000; 
+    const PRELOAD_PCT = 60; 
     const CACHE_TTL = 10 * 60 * 1000; 
     const AUDIO_UPDATE_INTERVAL = 3 * 60 * 1000;
 
@@ -186,20 +192,25 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
         return arr;
     };
 
+    // Force initialization after 3 seconds to prevent stuck white screen
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            if (!isInitialized) setIsInitialized(true);
+        }, 3000);
+        return () => clearTimeout(timer);
+    }, [isInitialized]);
+
     // 0. INIT PLAYLIST (SMART SHUFFLE: High/Low Alt Mix)
     useEffect(() => {
         if (webcams.length > 0) {
             webcamListRef.current = webcams;
             
-            // Separate by Altitude
             const highAlt = webcams.filter(w => w.altitude >= 1500);
             const lowAlt = webcams.filter(w => w.altitude < 1500);
             
-            // Shuffle groups independently
             const shuffledHigh = shuffleArray(highAlt);
             const shuffledLow = shuffleArray(lowAlt);
             
-            // Interleave (High -> Low -> High -> Low...)
             const smartPlaylist: Webcam[] = [];
             const maxLength = Math.max(shuffledHigh.length, shuffledLow.length);
             
@@ -208,11 +219,8 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                 if (i < shuffledLow.length) smartPlaylist.push(shuffledLow[i]);
             }
             
-            // Ensure no immediate repetition if we loop back
-            // (The interleaving logic handles standard variety well enough)
             setPlaylist(smartPlaylist);
             
-            // Initial Soundscape
             if (Date.now() - lastAudioUpdate.current > AUDIO_UPDATE_INTERVAL) {
                 const initialWeather: WeatherData = {
                     temp: "15", humidity: 50, wind: 10, rain: 0, 
@@ -226,10 +234,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
 
     // Extend Playlist when needed
     useEffect(() => {
-        // Infinite loop logic: Just re-append the smart playlist when getting close to end
         if (playlist.length > 0 && currentIndex >= playlist.length - 2) {
-            // Re-shuffle for variety in the next batch
-            // We can just re-run the interleaving logic on the original list
             const highAlt = webcamListRef.current.filter(w => w.altitude >= 1500);
             const lowAlt = webcamListRef.current.filter(w => w.altitude < 1500);
             const shuffledHigh = shuffleArray(highAlt);
@@ -242,23 +247,20 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                 if (i < shuffledLow.length) nextBatch.push(shuffledLow[i]);
             }
             
-            // Ensure first of new batch != last of current playlist
             if (nextBatch[0].id === playlist[playlist.length-1].id) {
-                nextBatch.push(nextBatch.shift()!); // Rotate one
+                nextBatch.push(nextBatch.shift()!); 
             }
 
             setPlaylist(prev => [...prev, ...nextBatch]);
         }
     }, [currentIndex, playlist]);
 
-    // Derived State for A/B Slots
     const activeWebcam = playlist[currentIndex];
     
     // Advance Logic
     const advanceCamera = () => {
         setActiveSlot(prev => prev === 'A' ? 'B' : 'A');
         setCurrentIndex(prev => prev + 1);
-        // Reset Pan on change
         setPanX(50); 
     };
 
@@ -303,17 +305,12 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
         if (touchStartX.current === null) return;
         
         const currentX = e.touches[0].clientX;
-        const diffX = touchStartX.current - currentX; // Positive if dragging LEFT (showing RIGHT content)
+        const diffX = touchStartX.current - currentX;
         const screenWidth = window.innerWidth;
-        
-        // Sensitivity factor: how much finger movement translates to % movement
-        // 100% of screen width = 100% of image pan seems fair
         const panDelta = (diffX / screenWidth) * 100;
         
         setPanX(prev => {
-            // Invert logic: Dragging LEFT (positive diff) should increase % (reveal right)
-            // Dragging RIGHT (negative diff) should decrease % (reveal left)
-            let newPan = prev + (panDelta * 0.5); // 0.5 dampening
+            let newPan = prev + (panDelta * 0.5); 
             return Math.max(0, Math.min(100, newPan));
         });
         
@@ -425,7 +422,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
         fetchData();
     }, [activeWebcam]);
 
-    if (!activeWebcam) return <div className="bg-black fixed inset-0"></div>;
+    if (!activeWebcam) return <div className="fixed inset-0 z-[200] bg-black"></div>;
 
     const weatherIcon = (weather?.code !== undefined && weather?.isDay !== undefined) 
         ? getWeatherIcon(weather.code, weather.isDay) 
@@ -445,13 +442,11 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
         >
-            {/* INITIAL LOADING SCREEN */}
-            {!isInitialized && (
-                <div className="absolute inset-0 z-50 bg-black flex flex-col items-center justify-center">
-                    <i className="ph-bold ph-broadcast text-4xl text-indigo-500 animate-pulse mb-4"></i>
-                    <span className="text-white/50 text-xs uppercase tracking-[0.3em]">Sintonitzant mode TV...</span>
-                </div>
-            )}
+            {/* INITIAL LOADING SCREEN (Z-INDEX 200 to cover everything) */}
+            <div className={`absolute inset-0 z-[200] bg-black flex flex-col items-center justify-center transition-opacity duration-700 ${!isInitialized ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+                <i className="ph-bold ph-broadcast text-4xl text-indigo-500 animate-pulse mb-4"></i>
+                <span className="text-white/50 text-xs uppercase tracking-[0.3em]">Sintonitzant mode TV...</span>
+            </div>
 
             {/* Slot A */}
             <AmbientHlsPlayer 
@@ -476,36 +471,36 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             {/* Noise Overlay */}
             <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-15 mix-blend-overlay pointer-events-none z-20"></div>
 
-            {/* HUD BOTTOM LEFT - COMPACT & CLEAN */}
-            <div className={`absolute bottom-6 left-6 sm:bottom-10 sm:left-10 z-30 flex flex-col gap-1 transition-opacity duration-500 pointer-events-none ${!isInitialized ? 'opacity-0' : 'opacity-100'}`}>
+            {/* HUD BOTTOM LEFT - ULTRA COMPACT MOBILE - NO UPPERCASE */}
+            <div className={`absolute bottom-6 left-4 sm:bottom-10 sm:left-10 z-30 flex flex-col gap-1 transition-opacity duration-500 pointer-events-none ${!isInitialized ? 'opacity-0' : 'opacity-100'}`}>
                 {/* Meta Header */}
-                <div className="flex items-center gap-3 mb-1 opacity-80">
-                    <div className="flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-red-600/80 backdrop-blur-sm text-white text-[8px] sm:text-[9px] font-bold uppercase tracking-wider shadow-lg border border-red-500/50">
+                <div className="flex items-center gap-2 mb-0.5 opacity-80">
+                    <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-600/80 backdrop-blur-sm text-white text-[7px] sm:text-[10px] font-bold shadow-lg border border-red-500/50">
                         <div className="w-1 h-1 bg-white rounded-full animate-pulse"></div> LIVE
                     </div>
-                    <span className="text-white/70 text-[9px] sm:text-[10px] font-bold uppercase tracking-widest border-l border-white/20 pl-2">
+                    <span className="text-white/70 text-[10px] sm:text-xs font-medium border-l border-white/20 pl-2">
                         {activeWebcam.region}
                     </span>
                 </div>
                 
-                {/* Main Title */}
-                <h1 className="text-2xl sm:text-4xl md:text-5xl font-bold tracking-tighter text-white leading-none shadow-black drop-shadow-md">
+                {/* Main Title - Normal Case */}
+                <h1 className="text-base sm:text-4xl md:text-5xl font-bold text-white leading-none shadow-black drop-shadow-md">
                     {activeWebcam.name}
                 </h1>
 
                 {/* Weather Info */}
                 {weather && (
-                    <div className="flex items-center gap-3 sm:gap-5 mt-2 text-white/90 bg-black/30 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/5 w-fit">
-                        <div className="flex items-center gap-2">
-                            {weatherIcon && <i className={`ph-fill ${weatherIcon.icon} text-lg sm:text-2xl ${weatherIcon.color} drop-shadow-sm`}></i>}
-                            <span className="text-lg sm:text-2xl font-medium tracking-tight">{weather.temp}°</span>
-                        </div>
-                        <div className="w-px h-4 sm:h-5 bg-white/20"></div>
+                    <div className="flex items-center gap-2 sm:gap-5 mt-1 text-white/90 bg-black/30 backdrop-blur-md px-2 py-0.5 sm:px-4 sm:py-2 rounded-lg border border-white/5 w-fit">
                         <div className="flex items-center gap-1.5 sm:gap-2">
-                            <i className="ph-fill ph-wind text-sm sm:text-lg text-blue-200/70"></i>
+                            {weatherIcon && <i className={`ph-fill ${weatherIcon.icon} text-xs sm:text-2xl ${weatherIcon.color} drop-shadow-sm`}></i>}
+                            <span className="text-xl sm:text-4xl font-medium tracking-tight">{weather.temp}°</span>
+                        </div>
+                        <div className="w-px h-3 sm:h-8 bg-white/20"></div>
+                        <div className="flex items-center gap-1 sm:gap-2">
+                            <i className="ph-fill ph-wind text-[10px] sm:text-lg text-blue-200/70"></i>
                             <div className="flex flex-col leading-none">
-                                <span className="text-xs sm:text-sm font-medium">{weather.wind}</span>
-                                <span className="text-[7px] uppercase font-bold text-white/40 tracking-wider">km/h</span>
+                                <span className="text-[10px] sm:text-sm font-medium">{weather.wind}</span>
+                                <span className="text-[7px] sm:text-[9px] font-medium text-white/40">km/h</span>
                             </div>
                         </div>
                     </div>
@@ -521,12 +516,12 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             </div>
 
             {/* EXIT BUTTON */}
-            <div className={`absolute top-4 left-4 sm:top-6 sm:left-6 z-50 transition-all duration-500 ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}`}>
+            <div className={`absolute top-4 left-4 sm:top-8 sm:left-8 z-50 transition-all duration-500 ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}`}>
                 <button 
                     onClick={onExit}
                     className="group flex items-center gap-2 bg-black/40 hover:bg-white hover:text-black text-white border border-white/20 backdrop-blur-xl pl-3 pr-1.5 py-1.5 rounded-full transition-all shadow-xl"
                 >
-                    <span className="text-[10px] font-bold uppercase tracking-wider">Sortir</span>
+                    <span className="text-[10px] font-bold tracking-wider">Sortir</span>
                     <div className="bg-white/20 group-hover:bg-black/10 rounded-full w-5 h-5 flex items-center justify-center">
                         <i className="ph-bold ph-x text-[10px]"></i>
                     </div>
