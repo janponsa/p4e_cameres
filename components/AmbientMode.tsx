@@ -35,6 +35,7 @@ const AmbientHlsPlayer = React.memo(({
         if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
 
         if (!shouldLoad) {
+            // Aggressive Cleanup
             if (hlsRef.current) {
                 hlsRef.current.destroy();
                 hlsRef.current = null;
@@ -49,10 +50,11 @@ const AmbientHlsPlayer = React.memo(({
         const video = videoRef.current;
         if (!video) return;
 
-        // FAIL-SAFE: If video doesn't play in 5 seconds (reduced from 7), skip
+        // FAIL-SAFE: If video doesn't play in 5 seconds
         loadTimeoutRef.current = window.setTimeout(() => {
             if (video.paused && onError) {
-                console.warn("Stream timeout (5s), skipping:", streamUrl);
+                // Only warn if we are supposed to be active
+                if (isActive) console.warn("Stream timeout (5s), skipping:", streamUrl);
                 onError();
             }
         }, 5000);
@@ -64,13 +66,10 @@ const AmbientHlsPlayer = React.memo(({
             if (hlsRef.current) hlsRef.current.destroy();
             
             const hls = new Hls({
-                enableWorker: true,
+                enableWorker: true, // Worker helps offload CPU
                 lowLatencyMode: true,
                 backBufferLength: 0, 
                 startLevel: -1,
-                manifestLoadingTimeOut: 5000, // Fast fail
-                levelLoadingTimeOut: 5000,
-                fragLoadingTimeOut: 5000
             });
             
             hlsRef.current = hls;
@@ -83,7 +82,7 @@ const AmbientHlsPlayer = React.memo(({
 
             hls.on(Hls.Events.ERROR, (event, data) => {
                 if (data.fatal) {
-                    if (onError) onError(); // Report error up immediately
+                    if (onError) onError();
                     hls.destroy();
                 }
             });
@@ -102,7 +101,7 @@ const AmbientHlsPlayer = React.memo(({
         };
 
         video.addEventListener('playing', handlePlaying);
-        video.addEventListener('loadedmetadata', handlePlaying); // Fallback for some browsers
+        video.addEventListener('loadedmetadata', handlePlaying);
 
         return () => {
             video.removeEventListener('playing', handlePlaying);
@@ -113,13 +112,13 @@ const AmbientHlsPlayer = React.memo(({
             }
             if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
         };
-    }, [streamUrl, shouldLoad]);
+    }, [streamUrl, shouldLoad]); // Depend only on streamUrl and load status
 
     return (
         <div className={`absolute inset-0 w-full h-full bg-black transition-opacity duration-1000 ${isActive ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}>
             <video 
                 ref={videoRef}
-                className="w-full h-full object-cover bg-black transition-[object-position] duration-100 ease-out"
+                className="w-full h-full object-cover bg-black transition-[object-position] duration-100 ease-out will-change-[object-position]"
                 style={{ objectPosition: `${panX}% center` }} 
                 muted
                 autoPlay
@@ -160,10 +159,11 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     
     // Slot Logic
     const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A');
+    // We only need a single boolean to toggle preload, simplifying state
+    const [preloadNext, setPreloadNext] = useState(false);
     
     // Data State
     const [weather, setWeather] = useState<WeatherData | null>(null);
-    const [progress, setProgress] = useState(0);
     const [isHovering, setIsHovering] = useState(false);
     
     // Sound State
@@ -182,8 +182,8 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const webcamListRef = useRef<Webcam[]>(webcams);
     
     // CONSTANTS
-    const DURATION = 14000; 
-    const PRELOAD_PCT = 60; 
+    const DURATION = 10000; 
+    const PRELOAD_DELAY = 6000; // Start preloading after 6s (4s before switch)
     const CACHE_TTL = 10 * 60 * 1000; 
     const AUDIO_UPDATE_INTERVAL = 3 * 60 * 1000;
 
@@ -226,8 +226,6 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             
             setPlaylist(smartPlaylist);
             
-            // Ensure audio is playing on enter (if it wasn't already)
-            // But we respect user toggle inside the mode
             if (Date.now() - lastAudioUpdate.current > AUDIO_UPDATE_INTERVAL) {
                 const initialWeather: WeatherData = {
                     temp: "15", humidity: 50, wind: 10, rain: 0, 
@@ -265,22 +263,23 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const activeWebcam = playlist[currentIndex];
     
     // Advance Logic
-    const advanceCamera = () => {
+    const advanceCamera = useCallback(() => {
+        setPreloadNext(false); // Reset preload trigger
         setActiveSlot(prev => prev === 'A' ? 'B' : 'A');
         setCurrentIndex(prev => prev + 1);
         setPanX(50); 
-    };
+    }, []);
 
-    const handleStreamError = () => {
-        console.warn("Skipping bad stream", activeWebcam?.name);
+    const handleStreamError = useCallback(() => {
+        console.warn("Skipping bad stream (Auto-advance)");
         advanceCamera();
-    };
+    }, [advanceCamera]);
 
-    const handleStreamReady = () => {
+    const handleStreamReady = useCallback(() => {
         if (!isInitialized) {
             setIsInitialized(true);
         }
-    };
+    }, [isInitialized]);
 
     const toggleAudio = (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -293,27 +292,25 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
         }
     };
 
-    // 1. ROTATION TIMER
+    // 1. ROTATION TIMER (OPTIMIZED: NO INTERVAL LOOP)
     useEffect(() => {
         if (!isInitialized) return;
 
-        const startTime = Date.now();
-        let switchScheduled = false;
+        // Schedule Advance
+        const advanceTimer = setTimeout(() => {
+            advanceCamera();
+        }, DURATION);
 
-        const timer = setInterval(() => {
-            const now = Date.now();
-            const elapsed = now - startTime;
-            const pct = Math.min(100, (elapsed / DURATION) * 100);
-            setProgress(pct);
+        // Schedule Preload (start loading next video mid-way)
+        const preloadTimer = setTimeout(() => {
+            setPreloadNext(true);
+        }, PRELOAD_DELAY);
 
-            if (elapsed >= DURATION && !switchScheduled) {
-                switchScheduled = true;
-                advanceCamera();
-            }
-        }, 100);
-
-        return () => clearInterval(timer);
-    }, [currentIndex, isInitialized]);
+        return () => {
+            clearTimeout(advanceTimer);
+            clearTimeout(preloadTimer);
+        };
+    }, [currentIndex, isInitialized, advanceCamera]);
 
     // 2. TOUCH PANNING LOGIC
     const handleTouchStart = (e: React.TouchEvent) => {
@@ -461,6 +458,13 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
         >
+            <style>{`
+                @keyframes progressLinear {
+                    0% { transform: scaleX(0); }
+                    100% { transform: scaleX(1); }
+                }
+            `}</style>
+
             {/* INITIAL LOADING SCREEN (Z-INDEX 200 to cover everything) */}
             <div className={`absolute inset-0 z-[200] bg-black flex flex-col items-center justify-center transition-opacity duration-700 ${!isInitialized ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
                 <i className="ph-bold ph-broadcast text-4xl text-indigo-500 animate-pulse mb-4"></i>
@@ -471,7 +475,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             <AmbientHlsPlayer 
                 streamUrl={slotAStream} 
                 isActive={isEvenIndex}
-                shouldLoad={isEvenIndex || (!isEvenIndex && progress > PRELOAD_PCT)} 
+                shouldLoad={isEvenIndex || (!isEvenIndex && preloadNext)} 
                 panX={panX}
                 onReady={isEvenIndex ? handleStreamReady : undefined}
                 onError={isEvenIndex ? handleStreamError : undefined}
@@ -481,7 +485,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             <AmbientHlsPlayer 
                 streamUrl={slotBStream} 
                 isActive={!isEvenIndex}
-                shouldLoad={!isEvenIndex || (isEvenIndex && progress > PRELOAD_PCT)} 
+                shouldLoad={!isEvenIndex || (isEvenIndex && preloadNext)} 
                 panX={panX}
                 onReady={!isEvenIndex ? handleStreamReady : undefined}
                 onError={!isEvenIndex ? handleStreamError : undefined}
@@ -490,7 +494,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
             {/* Noise Overlay */}
             <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-15 mix-blend-overlay pointer-events-none z-20"></div>
 
-            {/* HUD BOTTOM LEFT - RESPONSIVE SCALING (BALANCED) */}
+            {/* HUD BOTTOM LEFT - RESPONSIVE TYPOGRAPHY (Small Mobile / HUGE Desktop) */}
             <div className={`
                 absolute z-30 flex flex-col transition-opacity duration-500 pointer-events-none 
                 ${!isInitialized ? 'opacity-0' : 'opacity-100'}
@@ -561,12 +565,14 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                 )}
             </div>
 
-            {/* PROGRESS BAR */}
+            {/* PROGRESS BAR - GPU ACCELERATED CSS ANIMATION */}
             <div className={`absolute bottom-0 left-0 h-0.5 bg-white/5 w-full z-40 transition-opacity duration-500 ${!isInitialized ? 'opacity-0' : 'opacity-100'}`}>
-                <div 
-                    className="h-full bg-indigo-500/80 shadow-[0_0_10px_rgba(99,102,241,0.5)] transition-all duration-100 ease-linear"
-                    style={{ width: `${progress}%` }}
-                ></div>
+                {isInitialized && (
+                    <div 
+                        key={currentIndex} // Key change triggers restart of animation
+                        className="h-full bg-indigo-500/80 shadow-[0_0_10px_rgba(99,102,241,0.5)] origin-left animate-[progressLinear_10s_linear]"
+                    ></div>
+                )}
             </div>
 
             {/* CONTROLS (EXIT + AUDIO) */}
