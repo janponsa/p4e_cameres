@@ -34,19 +34,24 @@ const AmbientHlsPlayer = React.memo(({
     // Flag to prevent race conditions in async setup
     const isMounted = useRef(true);
 
-    // Deep cleanup function
+    // Deep cleanup function to free memory immediately
     const destroyPlayer = useCallback(() => {
         if (hlsRef.current) {
-            hlsRef.current.stopLoad(); // Stop network
-            hlsRef.current.detachMedia();
-            hlsRef.current.destroy();
+            try {
+                hlsRef.current.stopLoad(); // Stop downloading chunks
+                hlsRef.current.detachMedia();
+                hlsRef.current.destroy();
+            } catch (e) { /* ignore destroy errors */ }
             hlsRef.current = null;
         }
+        
+        // Nuclear option to force browser to drop video buffer from RAM
         if (videoRef.current) {
             videoRef.current.pause();
-            videoRef.current.removeAttribute('src'); // Release decoder
-            videoRef.current.load();
+            videoRef.current.removeAttribute('src'); 
+            videoRef.current.load(); 
         }
+
         if (loadTimeoutRef.current) {
             clearTimeout(loadTimeoutRef.current);
             loadTimeoutRef.current = null;
@@ -62,6 +67,7 @@ const AmbientHlsPlayer = React.memo(({
     }, [destroyPlayer]);
 
     useEffect(() => {
+        // If we shouldn't load, ensure everything is dead to save RAM
         if (!shouldLoad || !streamUrl) {
             destroyPlayer();
             return;
@@ -70,8 +76,7 @@ const AmbientHlsPlayer = React.memo(({
         const video = videoRef.current;
         if (!video) return;
 
-        // If we already have an HLS instance for this URL, do nothing
-        // But checking URL on HLS instance is hard, easier to destroy and recreate safely
+        // Ensure clean slate before loading new stream
         destroyPlayer();
 
         // FAIL-SAFE TIMEOUT
@@ -82,19 +87,20 @@ const AmbientHlsPlayer = React.memo(({
             }
         }, 8000);
 
-        const cacheBust = Math.floor(Date.now() / 30000); // Cache bust every 30s is enough
+        const cacheBust = Math.floor(Date.now() / 30000); // Cache bust every 30s
         const urlWithCache = `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}t=${cacheBust}`;
 
         if (Hls.isSupported()) {
             const hls = new Hls({
-                enableWorker: true,
+                enableWorker: true, // Uses WebWorker to keep main thread free
                 lowLatencyMode: true,
-                // EXTREME MEMORY OPTIMIZATION
-                backBufferLength: 0,
-                maxBufferLength: 2, // Only buffer 2 seconds ahead (we switch fast)
-                maxMaxBufferLength: 2,
+                
+                // --- PERFORMANCE OPTIMIZATION SETTINGS ---
+                backBufferLength: 0, // Don't keep past video
+                maxBufferLength: 2, // Only buffer 2 seconds ahead (we switch fast anyway)
+                maxMaxBufferLength: 3,
                 startLevel: -1,
-                capLevelToPlayerSize: true, // Don't download 4K on small screens
+                capLevelToPlayerSize: true, // Don't download 4K if displaying small
                 
                 // Fast Failures
                 manifestLoadingTimeOut: 5000,
@@ -108,7 +114,10 @@ const AmbientHlsPlayer = React.memo(({
             
             hls.on(Hls.Events.MANIFEST_PARSED, () => {
                 if(!isMounted.current) return;
-                video.play().catch(() => {/* Ignore auto-play errors */});
+                const playPromise = video.play();
+                if (playPromise !== undefined) {
+                    playPromise.catch(() => {});
+                }
             });
 
             hls.on(Hls.Events.ERROR, (event, data) => {
@@ -132,14 +141,16 @@ const AmbientHlsPlayer = React.memo(({
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
             // Safari Native
             video.src = urlWithCache;
-            video.play().catch(() => {});
-            const errorHandler = () => { if(onError) onError(); };
+            const playPromise = video.play();
+            if (playPromise !== undefined) playPromise.catch(() => {});
+            
+            const errorHandler = () => { if(onError && isMounted.current) onError(); };
             video.addEventListener('error', errorHandler, { once: true });
         }
         
         const handlePlaying = () => {
             if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
-            if (onReady) onReady();
+            if (onReady && isMounted.current) onReady();
         };
 
         video.addEventListener('playing', handlePlaying);
