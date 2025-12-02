@@ -82,10 +82,16 @@ export const DetailView: React.FC<DetailViewProps> = ({ webcam, onBack, timeOfDa
     const snapshotUrl = `${SNAPSHOT_BASE_URL}${webcam.id}-mini.jpg?r=${Math.floor(Date.now() / 60000)}`;
 
     // SOUNDSCAPE SYNC: Weather + AI Context
-    useEffect(() => {
+useEffect(() => {
         if (weather) {
-            const visualDescription = aiAnalysis ? aiAnalysis.visual_summary : "";
-            Soundscape.updateContext(weather, visualDescription);
+            const visualDescription = aiAnalysis ? aiAnalysis.visual_summary : `View of ${webcam.name}, ${webcam.region}`;
+            
+            // CANVI AQUÍ: Passem 'false' per indicar MODE DETALL
+            Soundscape.updateContext(
+                weather, 
+                visualDescription,
+                false // <--- AQUEST FALSE ACTIVA EL MODE "REALISTA/FOLEY"
+            );
         }
     }, [weather, aiAnalysis]);
 
