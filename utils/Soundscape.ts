@@ -25,7 +25,9 @@ async function decodeAudioData(
   } else {
     for (let i = 0; i < numChannels; i++) {
       const channelData = new Float32Array(dataFloat32.length / numChannels);
-      for (let j = 0; j < channelData.length; j++) channelData[j] = dataFloat32[j * numChannels + i];
+      for (let j = 0; j < channelData.length; j++) {
+        channelData[j] = dataFloat32[j * numChannels + i];
+      }
       buffer.copyToChannel(channelData, i);
     }
   }
@@ -36,6 +38,7 @@ async function decodeAudioData(
 const LYRIA_MODEL = 'lyria-realtime-exp';
 const LYRIA_SAMPLE_RATE = 48000; 
 
+// Aquest silenci és només per desbloquejar l'àudio en iOS/Safari
 const SILENT_WAV = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEAQB8AAEAfAAABAAgAAABmYWN0BAAAAAAAAABkYXRhAAAAAA==";
 
 class SoundscapeEngine {
@@ -54,7 +57,7 @@ class SoundscapeEngine {
     // Estat actual
     private currentVisualPrompt: string = "";
     private currentWeatherData: WeatherData | null = null;
-    private isGlobalMode: boolean = false; // TV Mode vs Detail Mode
+    private isGlobalMode: boolean = false; 
     private lastContextUpdate: number = 0;
 
     private musicVolume: number = 0.6;
@@ -191,7 +194,6 @@ class SoundscapeEngine {
         if (this.silentAudio) this.silentAudio.pause();
     }
 
-    // NOU PARÀMETRE: isGlobalMode per saber si som a TV Mode
     public updateContext(weather: WeatherData, visualSummary: string, isGlobalMode: boolean = false) {
         this.currentWeatherData = weather;
         this.currentVisualPrompt = visualSummary;
@@ -199,70 +201,91 @@ class SoundscapeEngine {
 
         if (!this.isPlaying) return;
         const now = Date.now();
-        if (now - this.lastContextUpdate < 8000) return; // Evitem spam de prompts
+        // Permetem actualitzacions una mica més ràpides si és mode detall per ser reactius
+        if (now - this.lastContextUpdate < 6000) return; 
         this.lastContextUpdate = now;
-        
-        // No fem ducking (baixada de volum) si és només un canvi subtil, per mantenir el flux
-        // this.performDucking(); 
         
         setTimeout(() => this.sendPrompts(), 500);
     }
 
-    // --- LÒGICA DE PROMPTS AVANÇADA ---
+    // --- EL COR DEL SISTEMA: GENERACIÓ DE PROMPTS REALISTA ---
+
+    private getNatureFoley(w: WeatherData): string {
+        let foley = "";
+        
+        // 1. VENT (La base de la presència)
+        // El vent dona la sensació d'espai físic.
+        if (w.wind > 60) {
+            foley += "Violent storm wind howling, microphone buffeting distortion, chaotic debris sounds, heavy sub-bass rumbling. ";
+        } else if (w.wind > 30) {
+            foley += "Strong mountain wind whistling through rocks, cold air pressure, turbulence texture. ";
+        } else if (w.wind > 10) {
+            foley += "Gentle constant breeze in pine trees, moving air texture, open valley acoustics. ";
+        } else {
+            foley += "Still air, absolute silence with microscopic nature details, vast empty space feeling. ";
+        }
+
+        // 2. PRECIPITACIÓ (La textura)
+        // Definim com colpeja l'aigua.
+        if (w.code !== undefined) {
+            // Pluja
+            if ((w.code >= 51 && w.code <= 67) || (w.code >= 80 && w.code <= 82)) {
+                if (w.rain > 5) {
+                    foley += "Heavy rain pouring on concrete and leaves, water streams rushing, distinct droplets close to microphone, wet atmosphere. ";
+                } else {
+                    foley += "Light rain drizzle, soft wet pavement texture, individual drops hitting jacket, damp air sound. ";
+                }
+            } 
+            // Tempesta
+            else if (w.code >= 95) {
+                foley += "Distant rolling thunder (low frequency), electric static in the air, sudden rain bursts, ominous atmosphere. ";
+            } 
+            // Neu (Silenci positiu)
+            else if (w.code >= 71 && w.code <= 77) {
+                foley += "Acoustic deadening (snow absorption), muffled footsteps, soft ice cracking, snowflake silence, freezing cold texture. ";
+            } 
+            // Boira
+            else if (w.code === 45 || w.code === 48) {
+                foley += "Thick fog droplets, flat acoustics, water condensation dripping, mysterious quietness. ";
+            }
+        }
+
+        return foley;
+    }
 
     private buildPrompt(w: WeatherData, visualSummary: string): string {
         const isDay = w.isDay !== undefined ? w.isDay : true;
+        const natureFoley = this.getNatureFoley(w);
         
-        // 1. RITME I ENERGIA (Depèn de l'hora del dia)
-        // DIA: Més actiu, amb pols, seqüències, moviment.
-        // NIT: Drone pur, sense ritme, per dormir.
-        let rhythmicBase = "";
-        if (isDay) {
-            rhythmicBase = "Active focus flow, gentle rhythmic pulse, soft marimba sequences, minimal percussion texture, major key, active awareness, steady momentum.";
-        } else {
-            rhythmicBase = "Deep sleep mode, beatless, no rhythm, floating drone, delta waves, slow attack, infinite sustain, subconscious state.";
-        }
+        // Aquesta és la clau per semblar Endel:
+        // No demanem "Música", demanem "Soundscape" i "Field Recording".
+        // Utilitzem termes de freqüència i color de soroll.
+        
+        const endelBase = isDay 
+            ? "Organic brown noise, alpha waves (8-12Hz), subtle warm drone, focus-enhancing frequencies, flow state."
+            : "Deep pink noise, delta waves (0.5-4Hz), womb-like resonance, sleep-inducing static, night crickets texture.";
 
-        // 2. MODE GLOBAL (TV) vs MODE DETALL (Càmera)
+        // --- MODE GLOBAL (TV) ---
+        // Viatge aeri suau, però realista.
         if (this.isGlobalMode) {
-            // --- MODE TV: GENÈRIC I AGRADABLE ---
             return `
-                Context: Ambient TV Mode, general overview of Catalonia landscapes.
-                Vibe: ${rhythmicBase}
-                Style: High-end generative functional music, cinematic emotional, wide stereo field, coherent flow, seamless loop.
+                Context: High-altitude aerial recording of Catalonia nature.
+                Audio Texture: ${endelBase}
+                Environment: Wind blowing over mountains, distant river flow, vast spatial reverb.
+                Musicality: Very subtle generative pads, no melody, no rhythm, seamless infinite texture, healing frequencies.
             `.replace(/\s+/g, ' ').trim();
         } 
+        
+        // --- MODE DETALL (IMMERSIVA) ---
+        // Aquí volem que l'usuari senti que és AL LLOC.
         else {
-            // --- MODE CÀMERA: IMMERSIU I REALISTA ---
-            // Aquí donem prioritat ABSOLUTA al que es veu i al temps.
-
-            // Foley del Temps (Sons reals)
-            let weatherFoley = "High fidelity field recording of ";
-            if (w.code !== undefined) {
-                if ((w.code >= 51 && w.code <= 67) || (w.code >= 80 && w.code <= 82)) {
-                    weatherFoley += "heavy rain on surfaces, splashing water, wet atmosphere.";
-                } else if (w.code >= 95) {
-                    weatherFoley += "distant rolling thunder, storm atmosphere, electric tension.";
-                } else if (w.code >= 71 && w.code <= 77) {
-                    weatherFoley += "soft snow crunch, muffled silence, cold wind howling.";
-                } else if (w.code === 45 || w.code === 48) {
-                    weatherFoley += "thick fog, hollow echoes, damp air.";
-                } else {
-                    // Bon temps (Vent o Ocells)
-                    if (w.wind > 20) weatherFoley += "strong wind gusts, rustling trees, air pressure.";
-                    else weatherFoley += "subtle nature ambience, distant birds, quiet breeze, fresh air.";
-                }
-            }
-
-            // Escena Visual (Poble, Vall, Riu...)
-            // Aprofitem el visualSummary que ve de Gemini Vision
-            const sceneTexture = `Sonic texture of: ${visualSummary}`;
-
             return `
-                Primary Layer (Realistic Foley): ${weatherFoley}
-                Secondary Layer (Scene): ${sceneTexture}
-                Musical Layer (Underscore): ${rhythmicBase}
-                Mix: Blend realistic foley with subtle musical underscore. Immersive 3D audio, binaural, organic textures.
+                Type: High-fidelity 3D Binaural Field Recording.
+                Location Acoustics: Open outdoor valley, natural reverb.
+                Weather Reality: ${natureFoley}
+                Visual Context: ${visualSummary} (translate visuals to sound textures).
+                Underlying Layer: ${endelBase} Very low volume generative drone layer for emotional grounding.
+                Constraints: No drums, no piano loops, no musical structure. Pure sonic texture and weather reality.
             `.replace(/\s+/g, ' ').trim();
         }
     }
@@ -272,7 +295,7 @@ class SoundscapeEngine {
         const weather = this.currentWeatherData || { temp: "15", wind: 5, humidity: 0, rain: 0, isReal: false };
         const masterPrompt = this.buildPrompt(weather, this.currentVisualPrompt);
         
-        console.log(`[Soundscape] Mode: ${this.isGlobalMode ? 'TV' : 'DETAIL'} | Day: ${weather.isDay}`);
+        console.log(`[Soundscape] Mode: ${this.isGlobalMode ? 'TV' : 'DETAIL'} | Realism Level: MAX`);
         console.log("[Soundscape] Prompt:", masterPrompt);
         
         try {
