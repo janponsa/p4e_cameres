@@ -30,22 +30,20 @@ const AmbientHlsPlayer = React.memo(({
     const videoRef = useRef<HTMLVideoElement>(null);
     const hlsRef = useRef<Hls | null>(null);
     const loadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    
-    // Flag to prevent race conditions in async setup
     const isMounted = useRef(true);
 
-    // Deep cleanup function to free memory immediately
+    // Deep cleanup function to force GC
     const destroyPlayer = useCallback(() => {
         if (hlsRef.current) {
             try {
-                hlsRef.current.stopLoad(); // Stop downloading chunks
+                hlsRef.current.stopLoad(); // Stop downloading
                 hlsRef.current.detachMedia();
                 hlsRef.current.destroy();
-            } catch (e) { /* ignore destroy errors */ }
+            } catch (e) { /* ignore */ }
             hlsRef.current = null;
         }
         
-        // Nuclear option to force browser to drop video buffer from RAM
+        // Force browser to drop video buffer
         if (videoRef.current) {
             videoRef.current.pause();
             videoRef.current.removeAttribute('src'); 
@@ -67,7 +65,6 @@ const AmbientHlsPlayer = React.memo(({
     }, [destroyPlayer]);
 
     useEffect(() => {
-        // If we shouldn't load, ensure everything is dead to save RAM
         if (!shouldLoad || !streamUrl) {
             destroyPlayer();
             return;
@@ -76,32 +73,30 @@ const AmbientHlsPlayer = React.memo(({
         const video = videoRef.current;
         if (!video) return;
 
-        // Ensure clean slate before loading new stream
+        // Ensure clean slate
         destroyPlayer();
 
         // FAIL-SAFE TIMEOUT
         loadTimeoutRef.current = setTimeout(() => {
             if (isMounted.current && video.paused && onError) {
-                if (isActive) console.warn(`[Ambient] Timeout loading: ${streamUrl}`);
+                if (isActive) console.warn(`[Ambient] Timeout: ${streamUrl}`);
                 onError();
             }
         }, 8000);
 
-        const cacheBust = Math.floor(Date.now() / 30000); // Cache bust every 30s
+        const cacheBust = Math.floor(Date.now() / 30000);
         const urlWithCache = `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}t=${cacheBust}`;
 
         if (Hls.isSupported()) {
             const hls = new Hls({
-                enableWorker: true, // Uses WebWorker to keep main thread free
+                enableWorker: true,
                 lowLatencyMode: true,
-                
-                // --- PERFORMANCE OPTIMIZATION SETTINGS ---
-                backBufferLength: 0, // Don't keep past video
-                maxBufferLength: 2, // Only buffer 2 seconds ahead (we switch fast anyway)
+                // MEMORY OPTIMIZATION: Tiny buffer
+                backBufferLength: 0,
+                maxBufferLength: 3, 
                 maxMaxBufferLength: 3,
                 startLevel: -1,
-                capLevelToPlayerSize: true, // Don't download 4K if displaying small
-                
+                capLevelToPlayerSize: true,
                 // Fast Failures
                 manifestLoadingTimeOut: 5000,
                 levelLoadingTimeOut: 5000,
@@ -115,9 +110,7 @@ const AmbientHlsPlayer = React.memo(({
             hls.on(Hls.Events.MANIFEST_PARSED, () => {
                 if(!isMounted.current) return;
                 const playPromise = video.play();
-                if (playPromise !== undefined) {
-                    playPromise.catch(() => {});
-                }
+                if (playPromise !== undefined) playPromise.catch(() => {});
             });
 
             hls.on(Hls.Events.ERROR, (event, data) => {
@@ -139,7 +132,6 @@ const AmbientHlsPlayer = React.memo(({
             });
 
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            // Safari Native
             video.src = urlWithCache;
             const playPromise = video.play();
             if (playPromise !== undefined) playPromise.catch(() => {});
