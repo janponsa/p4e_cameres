@@ -160,7 +160,7 @@ const WebcamCard: React.FC<WebcamCardProps> = ({ webcam, onClick, isDarkMode, mo
     
     // exact layout provided by user
     const layoutClasses = isMobileGrid 
-        ? "flex-col aspect-[4/3] sm:aspect-auto sm:h-56" 
+        ? "flex-col aspect-[16/10] sm:aspect-auto sm:h-56" 
         : "flex-row h-20 sm:flex-col sm:h-56"; 
 
     return (
