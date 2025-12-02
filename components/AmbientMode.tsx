@@ -29,49 +29,80 @@ const AmbientHlsPlayer = React.memo(({
 }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const hlsRef = useRef<Hls | null>(null);
-    const loadTimeoutRef = useRef<number | null>(null);
+    const loadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const retryCount = useRef(0);
 
     useEffect(() => {
-        if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
-
-        // SAFETY CHECK: If no URL, don't try to load anything
-        if (!shouldLoad || !streamUrl) {
+        // Cleanup function
+        return () => {
+            if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
             if (hlsRef.current) {
                 hlsRef.current.destroy();
                 hlsRef.current = null;
             }
             if (videoRef.current) {
-                videoRef.current.removeAttribute('src'); 
-                videoRef.current.load(); 
+                videoRef.current.removeAttribute('src');
+                videoRef.current.load();
             }
-            return;
-        }
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!shouldLoad || !streamUrl) return;
 
         const video = videoRef.current;
         if (!video) return;
 
-        // FAIL-SAFE: If video doesn't play in 5 seconds, skip
-        loadTimeoutRef.current = window.setTimeout(() => {
+        // Reset previous state
+        if (hlsRef.current) {
+            hlsRef.current.destroy();
+            hlsRef.current = null;
+        }
+        if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
+        
+        // FAIL-SAFE TIMEOUT: Give it 8 seconds to start playing
+        loadTimeoutRef.current = setTimeout(() => {
             if (video.paused && onError) {
-                if (isActive) console.warn("Stream timeout (5s), skipping:", streamUrl);
+                console.warn(`[Ambient] Timeout loading: ${streamUrl}`);
                 onError();
             }
-        }, 5000);
+        }, 8000);
 
         const cacheBust = Math.floor(Date.now() / 10000); 
         const urlWithCache = `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}t=${cacheBust}`;
 
+        const attemptPlay = () => {
+            const playPromise = video.play();
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    // Play started successfully
+                    if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
+                    if (onReady) onReady();
+                }).catch(e => {
+                    // Retry once if failed (often helps with autoplay policies)
+                    if (retryCount.current < 1) {
+                        retryCount.current++;
+                        setTimeout(() => {
+                            if(video) video.muted = true; 
+                            attemptPlay();
+                        }, 500);
+                    }
+                });
+            }
+        };
+
         if (Hls.isSupported()) {
-            if (hlsRef.current) hlsRef.current.destroy();
-            
             const hls = new Hls({
                 enableWorker: true,
                 lowLatencyMode: true,
-                backBufferLength: 0, 
+                backBufferLength: 0,
                 startLevel: -1,
-                manifestLoadingTimeOut: 5000,
-                levelLoadingTimeOut: 5000,
-                fragLoadingTimeOut: 5000
+                // OPTIMIZATION: Don't download 4K if displaying on a phone
+                capLevelToPlayerSize: true, 
+                // Aggressive timeouts to skip bad streams fast
+                manifestLoadingTimeOut: 8000,
+                levelLoadingTimeOut: 8000,
+                fragLoadingTimeOut: 8000
             });
             
             hlsRef.current = hls;
@@ -79,42 +110,37 @@ const AmbientHlsPlayer = React.memo(({
             hls.attachMedia(video);
             
             hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                video.play().catch(() => {});
+                attemptPlay();
             });
 
             hls.on(Hls.Events.ERROR, (event, data) => {
                 if (data.fatal) {
-                    if (onError) onError();
-                    hls.destroy();
+                    switch (data.type) {
+                        case Hls.ErrorTypes.NETWORK_ERROR:
+                            console.log("non-fatal network error, trying to recover");
+                            hls.startLoad();
+                            break;
+                        case Hls.ErrorTypes.MEDIA_ERROR:
+                            console.log("non-fatal media error, trying to recover");
+                            hls.recoverMediaError();
+                            break;
+                        default:
+                            hls.destroy();
+                            if (onError) onError();
+                            break;
+                    }
                 }
             });
 
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
             video.src = urlWithCache;
-            video.play().catch(() => {});
+            video.addEventListener('loadedmetadata', attemptPlay);
             video.addEventListener('error', () => {
                 if (onError) onError();
             });
         }
-
-        const handlePlaying = () => {
-            if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
-            if (onReady) onReady();
-        };
-
-        video.addEventListener('playing', handlePlaying);
-        video.addEventListener('loadedmetadata', handlePlaying);
-
-        return () => {
-            video.removeEventListener('playing', handlePlaying);
-            video.removeEventListener('loadedmetadata', handlePlaying);
-            if (hlsRef.current) {
-                hlsRef.current.destroy();
-                hlsRef.current = null;
-            }
-            if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
-        };
-    }, [streamUrl, shouldLoad]); 
+        
+    }, [streamUrl, shouldLoad, onError, onReady]);
 
     return (
         <div className={`absolute inset-0 w-full h-full bg-black transition-opacity duration-1000 ${isActive ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}>
@@ -122,11 +148,11 @@ const AmbientHlsPlayer = React.memo(({
                 ref={videoRef}
                 className="w-full h-full object-cover bg-black transition-[object-position] duration-100 ease-out will-change-[object-position]"
                 style={{ objectPosition: `${panX}% center` }} 
-                muted
-                autoPlay
+                muted={true}
                 playsInline
                 webkit-playsinline="true"
             />
+            {/* Reduced gradient overlay */}
             <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20 pointer-events-none"></div>
         </div>
     );
@@ -177,8 +203,8 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const webcamListRef = useRef<Webcam[]>(webcams);
     
     // CONSTANTS
-    const DURATION = 10000; 
-    const PRELOAD_DELAY = 6000; 
+    const DURATION = 14000; // 14 Seconds
+    const PRELOAD_DELAY = 10000; // Start preloading last 4 seconds
     const CACHE_TTL = 10 * 60 * 1000; 
     const AUDIO_UPDATE_INTERVAL = 3 * 60 * 1000;
 
@@ -195,10 +221,13 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     // Force initialization safety
     useEffect(() => {
         const timer = setTimeout(() => {
-            if (!isInitialized) setIsInitialized(true);
-        }, 3000);
+            if (!isInitialized && playlist.length > 0) {
+                 console.warn("Forcing init due to slow first load");
+                 setIsInitialized(true);
+            }
+        }, 8000);
         return () => clearTimeout(timer);
-    }, [isInitialized]);
+    }, [isInitialized, playlist]);
 
     // 0. INIT PLAYLIST
     useEffect(() => {
@@ -269,12 +298,11 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     }, []);
 
     const handleStreamError = useCallback(() => {
-        // If current cam fails, advance. If preload fails, we might just let it slide until it becomes active, 
-        // but better to prune. For simplicity, just advancing works as a retry mechanism.
-        // Real pruning logic is complex with HLS errors, so we rely on fail-fast skipping.
-        console.warn("Stream error/timeout. Advancing.");
+        if (!activeWebcam) return;
+        console.log(`[Ambient] Bad stream detected: ${activeWebcam.name}. Removing...`);
+        badStreamsRef.current.add(activeWebcam.streamUrl);
         advanceCamera();
-    }, [advanceCamera]);
+    }, [advanceCamera, activeWebcam]);
 
     const handleStreamReady = useCallback(() => {
         if (!isInitialized) {
@@ -345,7 +373,7 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                     } catch(e) {}
                 }
 
-                // Simplified Fetch Logic for Ambient Mode
+                // Simplified Fetch Logic
                 if (omData && omData.current) {
                     finalData = {
                         temp: omData.current.temperature_2m.toFixed(1),
@@ -426,7 +454,6 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
 
             <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-15 mix-blend-overlay pointer-events-none z-20"></div>
 
-            {/* HUD BOTTOM LEFT - ADJUSTED DESKTOP SIZES */}
             <div className={`
                 absolute z-30 flex flex-col transition-opacity duration-500 pointer-events-none 
                 ${!isInitialized ? 'opacity-0' : 'opacity-100'}
@@ -444,41 +471,25 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                 </div>
                 
                 <h1 className="font-bold text-white leading-none shadow-black drop-shadow-md
-                    text-base               
-                    md:text-5xl             
-                    lg:text-6xl             
-                    xl:text-7xl            
-                ">
+                    text-base md:text-4xl lg:text-5xl">
                     {activeWebcam.name}
                 </h1>
 
                 {weather && (
                     <div className="flex items-center mt-1 text-white/90 bg-black/30 backdrop-blur-md rounded-lg border border-white/5 w-fit
-                        gap-2 px-2 py-0.5                             
-                        md:gap-5 md:px-4 md:py-2.5 md:mt-3 md:rounded-xl
-                    ">
-                        <div className="flex items-center gap-1.5 md:gap-3">
-                            {weatherIcon && <i className={`ph-fill ${weatherIcon.icon} ${weatherIcon.color} drop-shadow-sm 
-                                text-sm md:text-3xl lg:text-4xl
-                            `}></i>}
-                            <span className="font-medium tracking-tight
-                                text-lg md:text-4xl lg:text-5xl
-                            ">{weather.temp}°</span>
+                        gap-2 px-2 py-0.5 md:gap-4 md:px-4 md:py-2 md:mt-2 md:rounded-xl">
+                        <div className="flex items-center gap-1.5 md:gap-2">
+                            {weatherIcon && <i className={`ph-fill ${weatherIcon.icon} ${weatherIcon.color} drop-shadow-sm text-sm md:text-2xl lg:text-3xl`}></i>}
+                            <span className="font-medium tracking-tight text-lg md:text-3xl lg:text-4xl">{weather.temp}°</span>
                         </div>
                         
-                        <div className="w-px bg-white/20 h-3 md:h-8 lg:h-10"></div>
+                        <div className="w-px bg-white/20 h-3 md:h-6 lg:h-8"></div>
                         
-                        <div className="flex items-center gap-1.5 md:gap-3">
-                            <i className="ph-fill ph-wind text-blue-200/70 
-                                text-xs md:text-2xl lg:text-3xl
-                            "></i>
+                        <div className="flex items-center gap-1.5 md:gap-2">
+                            <i className="ph-fill ph-wind text-blue-200/70 text-xs md:text-xl lg:text-2xl"></i>
                             <div className="flex items-center gap-1">
-                                <span className="font-medium 
-                                    text-sm md:text-2xl lg:text-3xl
-                                ">{weather.wind}</span>
-                                <span className="font-medium text-white/40 self-end mb-0.5
-                                    text-[9px] md:text-sm lg:text-base md:mb-1
-                                ">km/h</span>
+                                <span className="font-medium text-sm md:text-xl lg:text-2xl">{weather.wind}</span>
+                                <span className="font-medium text-white/40 self-end mb-0.5 text-[9px] md:text-xs md:mb-0.5">km/h</span>
                             </div>
                         </div>
                     </div>
@@ -489,20 +500,21 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
                 {isInitialized && (
                     <div 
                         key={currentIndex} 
-                        className="h-full bg-indigo-500/80 shadow-[0_0_10px_rgba(99,102,241,0.5)] origin-left animate-[progressLinear_10s_linear]"
+                        className="h-full bg-indigo-500/80 shadow-[0_0_10px_rgba(99,102,241,0.5)] origin-left"
+                        style={{ animation: `progressLinear ${DURATION}ms linear` }}
                     ></div>
                 )}
             </div>
 
             <div className={`absolute z-50 transition-all duration-500 top-4 left-4 md:top-8 md:left-8 ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'} flex items-center gap-2 md:gap-4`}>
-                <button onClick={onExit} className="group flex items-center gap-2 bg-black/40 hover:bg-white hover:text-black text-white border border-white/20 backdrop-blur-xl rounded-full transition-all shadow-xl pl-3 pr-1.5 py-1.5 md:pl-5 md:pr-3 md:py-2.5">
-                    <span className="font-bold tracking-wider text-[10px] md:text-sm">Sortir</span>
-                    <div className="bg-white/20 group-hover:bg-black/10 rounded-full flex items-center justify-center w-5 h-5 md:w-7 md:h-7">
-                        <i className="ph-bold ph-x text-[10px] md:text-xs"></i>
+                <button onClick={onExit} className="group flex items-center gap-2 bg-black/40 hover:bg-white hover:text-black text-white border border-white/20 backdrop-blur-xl rounded-full transition-all shadow-xl pl-3 pr-1.5 py-1.5 md:pl-4 md:pr-3 md:py-2">
+                    <span className="font-bold tracking-wider text-[10px] md:text-xs">Sortir</span>
+                    <div className="bg-white/20 group-hover:bg-black/10 rounded-full flex items-center justify-center w-5 h-5 md:w-6 md:h-6">
+                        <i className="ph-bold ph-x text-[10px] md:text-[10px]"></i>
                     </div>
                 </button>
-                <button onClick={toggleAudio} className={`flex items-center justify-center rounded-full transition-all shadow-xl backdrop-blur-xl border w-8 h-8 md:w-12 md:h-12 ${isAudioOn ? 'bg-black/40 text-white border-white/20 hover:bg-white hover:text-black' : 'bg-red-500/80 text-white border-red-400 hover:bg-red-600'}`} title={isAudioOn ? "Silenciar" : "Activar So"}>
-                    <i className={`ph-bold ${isAudioOn ? 'ph-speaker-high' : 'ph-speaker-slash'} text-sm md:text-lg`}></i>
+                <button onClick={toggleAudio} className={`flex items-center justify-center rounded-full transition-all shadow-xl backdrop-blur-xl border w-8 h-8 md:w-10 md:h-10 ${isAudioOn ? 'bg-black/40 text-white border-white/20 hover:bg-white hover:text-black' : 'bg-red-500/80 text-white border-red-400 hover:bg-red-600'}`} title={isAudioOn ? "Silenciar" : "Activar So"}>
+                    <i className={`ph-bold ${isAudioOn ? 'ph-speaker-high' : 'ph-speaker-slash'} text-sm md:text-base`}></i>
                 </button>
             </div>
         </div>
