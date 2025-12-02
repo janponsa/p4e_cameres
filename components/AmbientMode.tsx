@@ -30,79 +30,76 @@ const AmbientHlsPlayer = React.memo(({
     const videoRef = useRef<HTMLVideoElement>(null);
     const hlsRef = useRef<Hls | null>(null);
     const loadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const retryCount = useRef(0);
+    
+    // Flag to prevent race conditions in async setup
+    const isMounted = useRef(true);
 
-    useEffect(() => {
-        // Cleanup function
-        return () => {
-            if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
-            if (hlsRef.current) {
-                hlsRef.current.destroy();
-                hlsRef.current = null;
-            }
-            if (videoRef.current) {
-                videoRef.current.removeAttribute('src');
-                videoRef.current.load();
-            }
-        };
+    // Deep cleanup function
+    const destroyPlayer = useCallback(() => {
+        if (hlsRef.current) {
+            hlsRef.current.stopLoad(); // Stop network
+            hlsRef.current.detachMedia();
+            hlsRef.current.destroy();
+            hlsRef.current = null;
+        }
+        if (videoRef.current) {
+            videoRef.current.pause();
+            videoRef.current.removeAttribute('src'); // Release decoder
+            videoRef.current.load();
+        }
+        if (loadTimeoutRef.current) {
+            clearTimeout(loadTimeoutRef.current);
+            loadTimeoutRef.current = null;
+        }
     }, []);
 
     useEffect(() => {
-        if (!shouldLoad || !streamUrl) return;
+        isMounted.current = true;
+        return () => {
+            isMounted.current = false;
+            destroyPlayer();
+        };
+    }, [destroyPlayer]);
+
+    useEffect(() => {
+        if (!shouldLoad || !streamUrl) {
+            destroyPlayer();
+            return;
+        }
 
         const video = videoRef.current;
         if (!video) return;
 
-        // Reset previous state
-        if (hlsRef.current) {
-            hlsRef.current.destroy();
-            hlsRef.current = null;
-        }
-        if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
-        
-        // FAIL-SAFE TIMEOUT: Give it 8 seconds to start playing
+        // If we already have an HLS instance for this URL, do nothing
+        // But checking URL on HLS instance is hard, easier to destroy and recreate safely
+        destroyPlayer();
+
+        // FAIL-SAFE TIMEOUT
         loadTimeoutRef.current = setTimeout(() => {
-            if (video.paused && onError) {
-                console.warn(`[Ambient] Timeout loading: ${streamUrl}`);
+            if (isMounted.current && video.paused && onError) {
+                if (isActive) console.warn(`[Ambient] Timeout loading: ${streamUrl}`);
                 onError();
             }
         }, 8000);
 
-        const cacheBust = Math.floor(Date.now() / 10000); 
+        const cacheBust = Math.floor(Date.now() / 30000); // Cache bust every 30s is enough
         const urlWithCache = `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}t=${cacheBust}`;
-
-        const attemptPlay = () => {
-            const playPromise = video.play();
-            if (playPromise !== undefined) {
-                playPromise.then(() => {
-                    // Play started successfully
-                    if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
-                    if (onReady) onReady();
-                }).catch(e => {
-                    // Retry once if failed (often helps with autoplay policies)
-                    if (retryCount.current < 1) {
-                        retryCount.current++;
-                        setTimeout(() => {
-                            if(video) video.muted = true; 
-                            attemptPlay();
-                        }, 500);
-                    }
-                });
-            }
-        };
 
         if (Hls.isSupported()) {
             const hls = new Hls({
                 enableWorker: true,
                 lowLatencyMode: true,
+                // EXTREME MEMORY OPTIMIZATION
                 backBufferLength: 0,
+                maxBufferLength: 2, // Only buffer 2 seconds ahead (we switch fast)
+                maxMaxBufferLength: 2,
                 startLevel: -1,
-                // OPTIMIZATION: Don't download 4K if displaying on a phone
-                capLevelToPlayerSize: true, 
-                // Aggressive timeouts to skip bad streams fast
-                manifestLoadingTimeOut: 8000,
-                levelLoadingTimeOut: 8000,
-                fragLoadingTimeOut: 8000
+                capLevelToPlayerSize: true, // Don't download 4K on small screens
+                
+                // Fast Failures
+                manifestLoadingTimeOut: 5000,
+                levelLoadingTimeOut: 5000,
+                fragLoadingTimeOut: 5000
             });
             
             hlsRef.current = hls;
@@ -110,22 +107,22 @@ const AmbientHlsPlayer = React.memo(({
             hls.attachMedia(video);
             
             hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                attemptPlay();
+                if(!isMounted.current) return;
+                video.play().catch(() => {/* Ignore auto-play errors */});
             });
 
             hls.on(Hls.Events.ERROR, (event, data) => {
+                if(!isMounted.current) return;
                 if (data.fatal) {
                     switch (data.type) {
                         case Hls.ErrorTypes.NETWORK_ERROR:
-                            console.log("non-fatal network error, trying to recover");
                             hls.startLoad();
                             break;
                         case Hls.ErrorTypes.MEDIA_ERROR:
-                            console.log("non-fatal media error, trying to recover");
                             hls.recoverMediaError();
                             break;
                         default:
-                            hls.destroy();
+                            destroyPlayer();
                             if (onError) onError();
                             break;
                     }
@@ -133,14 +130,24 @@ const AmbientHlsPlayer = React.memo(({
             });
 
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            // Safari Native
             video.src = urlWithCache;
-            video.addEventListener('loadedmetadata', attemptPlay);
-            video.addEventListener('error', () => {
-                if (onError) onError();
-            });
+            video.play().catch(() => {});
+            const errorHandler = () => { if(onError) onError(); };
+            video.addEventListener('error', errorHandler, { once: true });
         }
         
-    }, [streamUrl, shouldLoad, onError, onReady]);
+        const handlePlaying = () => {
+            if (loadTimeoutRef.current) clearTimeout(loadTimeoutRef.current);
+            if (onReady) onReady();
+        };
+
+        video.addEventListener('playing', handlePlaying);
+
+        return () => {
+            video.removeEventListener('playing', handlePlaying);
+        };
+    }, [streamUrl, shouldLoad, destroyPlayer, isActive, onError, onReady]);
 
     return (
         <div className={`absolute inset-0 w-full h-full bg-black transition-opacity duration-1000 ${isActive ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}>
@@ -152,7 +159,6 @@ const AmbientHlsPlayer = React.memo(({
                 playsInline
                 webkit-playsinline="true"
             />
-            {/* Reduced gradient overlay */}
             <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20 pointer-events-none"></div>
         </div>
     );
@@ -203,8 +209,8 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     const webcamListRef = useRef<Webcam[]>(webcams);
     
     // CONSTANTS
-    const DURATION = 14000; // 14 Seconds
-    const PRELOAD_DELAY = 10000; // Start preloading last 4 seconds
+    const DURATION = 14000; 
+    const PRELOAD_DELAY = 10000; 
     const CACHE_TTL = 10 * 60 * 1000; 
     const AUDIO_UPDATE_INTERVAL = 3 * 60 * 1000;
 
@@ -222,7 +228,6 @@ const AmbientMode: React.FC<AmbientModeProps> = ({ webcams, onExit }) => {
     useEffect(() => {
         const timer = setTimeout(() => {
             if (!isInitialized && playlist.length > 0) {
-                 console.warn("Forcing init due to slow first load");
                  setIsInitialized(true);
             }
         }, 8000);
